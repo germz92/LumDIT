@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lumdit"
+version = "0.1.0"
+description = "LumDIT - DIT / media offload and management tool for verified SD card backups"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = [
+    "PySide6>=6.6",
+    "xxhash>=3.4",
+    "psutil>=5.9",
+    "Pillow>=10.0",
+    "pillow-heif>=0.15",
+    "rawpy>=0.19",
+    "av>=12.0",
+    "pymongo>=4.6",
+    "dnspython>=2.4",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+lumdit = "lumdit.app:main"
+
+[project.gui-scripts]
+lumdit-gui = "lumdit.app:main"
+
+[tool.setuptools.packages.find]
+include = ["lumdit*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
