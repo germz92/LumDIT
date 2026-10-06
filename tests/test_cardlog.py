@@ -142,6 +142,17 @@ def test_backed_up_update_shape():
     assert update2["$set"]["cardLog.$[].entries.$[e].card2BackedUp"] is False
 
 
+def test_photo_only_event_creates_only_photo_folder(tmp_path):
+    ev = parse_event(EVENT_DOC)
+    prod = find_or_create_for_event(tmp_path, "evt-photo", "Photo Day", "Acme", "Photo Day", ev.start, ev.end, ["Photo"])
+    assert prod.categories == ["Photo"]
+    assert (prod.root / "Photo").is_dir()
+    assert not (prod.root / "Video").exists() and not (prod.root / "Headshot Booth").exists()
+    # A log with no categories at all still gets somewhere to put cards.
+    bare = find_or_create_for_event(tmp_path, "evt-bare", "Bare", "Acme", "Bare", ev.start, ev.end, [])
+    assert bare.categories == ["Photo"]
+
+
 def test_find_or_create_for_event_maps_paths(tmp_path):
     ev = parse_event(EVENT_DOC)
     prod = find_or_create_for_event(
@@ -149,7 +160,8 @@ def test_find_or_create_for_event_maps_paths(tmp_path):
     )
     assert prod.root == tmp_path / "Proofpoint" / "ProofPoint Protect"
     assert prod.event_id == ev.id
-    assert prod.categories == ["Photo", "Video", "Headshot Booth"]
+    # Only the categories the log actually uses, in log order - no empty preset folders.
+    assert prod.categories == ["Video", "Headshot Booth", "Photo"]
     assert (prod.root / "Video" / "09.22.2026").is_dir()
 
     e3 = ev.find_entry(str(E3))

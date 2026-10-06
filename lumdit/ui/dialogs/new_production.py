@@ -91,7 +91,8 @@ class NewProductionDialog(QDialog):
         self.folders = QListWidget()
         self.folders.setMaximumHeight(120)
         for preset in PRESET_CATEGORIES:
-            self._add_folder_item(preset, checked=True)
+            # Only Photo is on by default; tick Video / Headshot Booth per production.
+            self._add_folder_item(preset, checked=(preset == PRESET_CATEGORIES[0]))
         self.folders.itemChanged.connect(self._update_preview)
         folders_box.addWidget(self.folders)
         custom = QHBoxLayout()

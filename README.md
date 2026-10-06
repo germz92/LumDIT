@@ -39,7 +39,8 @@ LumDIT can read the crew app's card log from MongoDB and walk the DIT card-by-ca
 2. Click **Start Event Backup...** (welcome page, toolbar, or `Ctrl+E`) and pick an event. The
    production is created as `<root>/<Company>/<Event title>` (the event's company name is the
    client folder; both are editable before you start) with the event's dates and the
-   categories found in its log (Photo / Video / Headshot Booth / Other). Re-selecting the same
+   only the categories found in its log (Photo / Video / Headshot Booth / Other) - a photo-only
+   event gets just a `Photo` folder; others are added when a card for them is offloaded. Re-selecting the same
    event reuses the existing production.
 3. The right-hand **Card Log** panel lists every card grouped by shoot date and highlights the next
    one to insert ("Insert card #32 - A7IV - Jennifer R."). Only card 1 of each dual-recording pair is

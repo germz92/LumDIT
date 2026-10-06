@@ -326,14 +326,17 @@ def find_or_create_for_event(
 
     If ``<root>/<client>/<name>/production.json`` already exists it is loaded and
     linked to the event (and any missing categories/dates are added); otherwise
-    a new production is created with the three presets plus whatever categories
-    the card log uses.
+    a new production is created with only the categories the card log actually
+    uses (falling back to Photo when none of the entries carry a category). Other
+    folders are added on the fly when a card for them is offloaded.
     """
-    cats = list(PRESET_CATEGORIES)
+    cats: list[str] = []
     for c in categories:
         c = sanitize_name(c)
         if c and c not in cats:
             cats.append(c)
+    if not cats:
+        cats = [PRESET_CATEGORIES[0]]
     root = Path(destination_root) / sanitize_name(client) / sanitize_name(name)
     if (root / PRODUCTION_FILE).is_file():
         prod = Production.load(root)
