@@ -134,7 +134,9 @@ def test_offload_survives_garbage_source_timestamps(tmp_path):
     assert result.mhl_path and result.mhl_path.is_file()
     assert (dest / REPORT_NAME).is_file()
     bad = next(e for e in read_mhl(result.mhl_path) if e.relative_path.endswith("SONYCARD.IND"))
-    assert bad.last_modified == "1601-01-01T00:00:00Z"
+    # Windows reports exactly 1601-01-01; APFS clamps to its own floor (1677-09-21). Either way
+    # the manifest must carry a pre-1970 date rather than blowing up.
+    assert bad.last_modified < "1970", bad.last_modified
     assert verify_manifest(result.mhl_path).passed
 
 
