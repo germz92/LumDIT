@@ -37,5 +37,8 @@ lumdit-gui = "lumdit.app:main"
 [tool.setuptools.packages.find]
 include = ["lumdit*"]
 
+[tool.setuptools.package-data]
+lumdit = ["resources/*.png"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

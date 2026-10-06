@@ -22,7 +22,7 @@ a = Analysis(
     [str(ROOT / "lumdit" / "__main__.py")],
     pathex=[str(ROOT)],
     binaries=binaries,
-    datas=[],
+    datas=[(str(ROOT / "lumdit" / "resources"), "lumdit/resources")],
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],

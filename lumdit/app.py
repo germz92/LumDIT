@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
@@ -11,6 +12,14 @@ from PySide6.QtWidgets import QApplication
 
 from lumdit import APP_NAME, ORG_NAME, __version__
 from lumdit.logging_setup import setup_logging
+
+
+def app_icon() -> QIcon:
+    """Bundled app icon (lumdit/resources/lumdit.png), with a theme fallback."""
+    path = Path(__file__).with_name("resources") / "lumdit.png"
+    if path.is_file():
+        return QIcon(str(path))
+    return QIcon.fromTheme("camera-photo")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,7 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     app = QApplication(argv)
     app.setStyle("Fusion")
-    app.setWindowIcon(QIcon.fromTheme("camera-photo"))
+    app.setWindowIcon(app_icon())
 
     from lumdit.ui.main_window import MainWindow
 

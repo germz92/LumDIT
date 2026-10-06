@@ -112,7 +112,8 @@ Windows installer (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 iscc /DAppVersion=0.3.0 packaging\lumdit.iss      # -> dist/LumDIT-0.3.0-Setup.exe
 ```
 
-Drop a `lumdit.ico` / `lumdit.icns` into `packaging/` to get a custom app icon.
+The app icon lives in `packaging/lumdit.ico` / `lumdit.icns` (installer, exe and .app bundle) and
+`lumdit/resources/lumdit.png` (window icon at runtime).
 
 ### Releases
 
