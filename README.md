@@ -88,6 +88,16 @@ python -m lumdit
 
 Tests: `pytest`
 
+## Log file
+
+Every run writes a rotating log (2 MB x 5) with offload start/finish lines, per-file problems,
+card-log activity and full tracebacks for anything unexpected. Open it from **Help > Open Log File**.
+
+- Windows: `%LOCALAPPDATA%\LumDIT\lumdit.log`
+- macOS: `~/Library/Logs/LumDIT/lumdit.log`
+
+MongoDB credentials are redacted before they reach the file. Set `LUMDIT_DEBUG=1` for verbose output.
+
 ## Building installers
 
 ```bash

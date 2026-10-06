@@ -17,6 +17,7 @@ free space is insufficient, never write to the source.
 
 from __future__ import annotations
 
+import logging
 import os
 import platform
 import shutil
@@ -58,6 +59,7 @@ JUNK_NAMES = {
 }
 JUNK_PREFIXES = ("._",)
 REPORT_NAME = "OFFLOAD_REPORT.txt"
+log = logging.getLogger(__name__)
 
 
 class OffloadError(Exception):
@@ -319,8 +321,13 @@ class OffloadEngine:
         mhl_path = sidecar_path = report_path = None
 
         try:
+            log.info(
+                "Offload start: %s | %s -> %s | roots=%s | label=%r",
+                req.title, req.source, req.destination, list(req.include_roots) or "all", req.source_label,
+            )
             scan = scan_source(req.source, req.source_label, req.include_roots)
             fingerprint = scan.fingerprint
+            log.info("Scanned %d files, %.2f GB, %d junk skipped, fingerprint %s", len(scan.files), scan.total_bytes / 1e9, scan.skipped_junk, fingerprint)
             self.preflight(scan)
             self.progress.bytes_total = scan.total_bytes * 2  # copy pass + read-back pass
             self.progress.files_total = len(scan.files)
@@ -332,6 +339,8 @@ class OffloadEngine:
                 self.progress.current_file = entry.relative
                 outcome = self._process_file(entry)
                 outcomes.append(outcome)
+                if outcome.status in ("conflict", "error"):
+                    log.warning("%s: %s - %s", outcome.status.upper(), entry.relative, outcome.detail)
                 if outcome.status == "copied":
                     copied_bytes += entry.size
                 if outcome.xxh64:
@@ -381,13 +390,22 @@ class OffloadEngine:
             self.progress.bytes_done = self.progress.bytes_total
             self.progress.current_file = ""
             self._emit(force=True)
+            log.info(
+                "Offload %s: %s | %d copied, %d skipped, %d problems | %.2f GB in %.0fs",
+                status.upper(), req.title, result.copied, result.skipped, len(problems), result.total_bytes / 1e9, result.duration,
+            )
             return result
 
         except Cancelled:
             status, message = "cancelled", "Cancelled by user"
             self.progress.phase = "cancelled"
+            log.info("Offload cancelled: %s after %d files", req.title, len(outcomes))
         except (OffloadError, OSError) as exc:
             status, message = "error", str(exc)
+            log.exception(
+                "Offload ERROR: %s | failed during %s | %d files done, current=%r | %s",
+                req.title, self.progress.phase, len(outcomes), self.progress.current_file, exc,
+            )
             self.progress.phase = "error"
 
         self._emit(force=True)
@@ -461,6 +479,7 @@ class OffloadEngine:
                 raise
             except OSError as exc:
                 last_error = str(exc)
+                log.debug("File error on %s (attempt %d)", entry.relative, attempt + 1, exc_info=True)
                 _unlink(part)
                 break
         return FileOutcome(entry.relative, "error", detail=last_error or "Unknown error")

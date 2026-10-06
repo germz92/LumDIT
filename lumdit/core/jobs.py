@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import subprocess
 import sys
 import threading
@@ -25,6 +26,7 @@ from lumdit.core.mhl import VerifyResult, manifest_total_bytes, verify_manifest
 from lumdit.core.offload import OffloadEngine, OffloadProgress, OffloadRequest, OffloadResult
 
 _job_ids = itertools.count(1)
+log = logging.getLogger(__name__)
 
 
 class SleepInhibitor:
@@ -100,7 +102,8 @@ class _OffloadRunnable(QRunnable):
             result = engine.run()
             self.signals.finished.emit(job.id, result)
         except Exception as exc:  # pragma: no cover - defensive
-            self.signals.failed.emit(job.id, str(exc))
+            log.exception("Offload job %s (%s) crashed", job.id, job.title)
+            self.signals.failed.emit(job.id, f"{exc.__class__.__name__}: {exc}")
 
 
 class _VerifyRunnable(QRunnable):
@@ -132,7 +135,8 @@ class _VerifyRunnable(QRunnable):
             self.signals.progress.emit(job.id, _snapshot(prog))
             self.signals.failed.emit(job.id, "Cancelled by user")
         except Exception as exc:
-            self.signals.failed.emit(job.id, str(exc))
+            log.exception("Verify job %s (%s) failed", job.id, manifest)
+            self.signals.failed.emit(job.id, f"{exc.__class__.__name__}: {exc}")
 
 
 def _snapshot(p: OffloadProgress) -> OffloadProgress:

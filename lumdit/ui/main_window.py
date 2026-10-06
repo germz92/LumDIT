@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QByteArray, Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent, QKeySequence
+from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
+from PySide6.QtGui import QAction, QCloseEvent, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QFileDialog,
     QInputDialog,
@@ -26,6 +27,7 @@ from lumdit.core.jobs import Job, JobManager
 from lumdit.core.mhl import VerifyResult, find_manifests
 from lumdit.core.offload import OffloadResult
 from lumdit.core.production import OffloadRecord, Production, ProductionError
+from lumdit.logging_setup import log_dir, log_path
 from lumdit.settings import Settings, cache_dir
 from lumdit.ui.cardlog_panel import CardLogPanel
 from lumdit.ui.dialogs.event_picker import EventPickerDialog
@@ -41,6 +43,8 @@ from lumdit.ui.production_view import ProductionView
 from lumdit.ui.sidebar import Sidebar
 from lumdit.ui.thumbnail_loader import ThumbnailLoader
 from lumdit.ui.welcome import WelcomePage
+
+log = logging.getLogger(__name__)
 
 
 def _recent_label(path: str) -> str:
@@ -163,6 +167,11 @@ class MainWindow(QMainWindow):
         self.act_quit.triggered.connect(self.close)
         self.act_about = QAction("About", self)
         self.act_about.triggered.connect(self._about)
+        self.act_open_log = QAction("Open Log File", self)
+        self.act_open_log.setToolTip(str(log_path()))
+        self.act_open_log.triggered.connect(self._open_log)
+        self.act_open_log_folder = QAction("Show Log Folder", self)
+        self.act_open_log_folder.triggered.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(log_dir()))))
 
     def _build_toolbar(self) -> None:
         tb = QToolBar("Main")
@@ -203,6 +212,9 @@ class MainWindow(QMainWindow):
         tools.addSeparator()
         tools.addAction(self.act_settings)
         help_menu = mb.addMenu("&Help")
+        help_menu.addAction(self.act_open_log)
+        help_menu.addAction(self.act_open_log_folder)
+        help_menu.addSeparator()
         help_menu.addAction(self.act_about)
 
     def _fill_recent(self) -> None:
@@ -230,6 +242,7 @@ class MainWindow(QMainWindow):
         try:
             prod = Production.load(Path(path))
         except (ProductionError, OSError, ValueError, KeyError) as exc:
+            log.warning("Cannot open production %s: %s", path, exc)
             QMessageBox.warning(self, "Cannot open production", f"{path}\n\n{exc}")
             return
         prod.ensure_structure()
@@ -382,6 +395,7 @@ class MainWindow(QMainWindow):
                     )
                 )
             except OSError as exc:
+                log.exception("Could not update production.json for %s", self.production.root)
                 self.statusBar().showMessage(f"Could not update production.json: {exc}", 8000)
         self.production_view.refresh()
         self.production_view.reveal(req.destination)
@@ -455,12 +469,20 @@ class MainWindow(QMainWindow):
             self.browser.size_slider.setValue(self.settings.thumbnail_size)
             self.browser.refresh()
 
+    def _open_log(self) -> None:
+        p = log_path()
+        if not p.exists():
+            QMessageBox.information(self, "Log file", f"No log file yet.\n\nIt will be written to:\n{p}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(p)))
+
     def _about(self) -> None:
         QMessageBox.about(
             self,
             f"About {APP_NAME}",
             f"<b>{APP_NAME} {__version__}</b><br>Verified media offload for DITs and photo/video teams.<br><br>"
-            "Checksums: xxHash64 with read-back verification<br>Manifests: MHL 1.1 + .xxh64 sidecar",
+            "Checksums: xxHash64 with read-back verification<br>Manifests: MHL 1.1 + .xxh64 sidecar<br><br>"
+            f"<span style='color:gray'>Log: {log_path()}</span>",
         )
 
     # ---- state ------------------------------------------------------------------------

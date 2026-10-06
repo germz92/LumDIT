@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
@@ -25,6 +26,10 @@ class _Task(QRunnable):
         try:
             result = self.fn()
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI
+            logging.getLogger(__name__).warning(
+                "Background task %s failed: %s: %s", getattr(self.fn, "__qualname__", self.fn), exc.__class__.__name__, exc,
+                exc_info=True,
+            )
             self.signals.error.emit(str(exc) or exc.__class__.__name__)
         else:
             self.signals.done.emit(result)

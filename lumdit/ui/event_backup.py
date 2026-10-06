@@ -8,6 +8,7 @@ queue stored in production.json).
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from lumdit.ui.cardlog_panel import CardLogPanel
 from lumdit.ui.dialogs.event_picker import EventChoice
 
 ACTIVE_STATES = ("queued", "running")
+log = logging.getLogger(__name__)
 
 
 class EventBackupController(QObject):
@@ -81,6 +83,7 @@ class EventBackupController(QObject):
     def attach(self, event: CardLogEvent, production: Production) -> None:
         self.log_event = event
         self.production = production
+        log.info("Event backup attached: %r (%s) -> %s | %d/%d card 1s backed up", event.title, event.id, production.root, *event.progress(1))
         self.target = None
         self.skipped.clear()
         self.statuses = {}
@@ -127,6 +130,7 @@ class EventBackupController(QObject):
                 self.attach(ev, production)
 
         def failed(msg: str) -> None:
+            log.warning("Card log unavailable for %s: %s", production.event_id, msg)
             self.panel.set_note(f"Card log unavailable: {msg}")
 
         run_async(work, done, failed)
@@ -169,6 +173,7 @@ class EventBackupController(QObject):
 
         def failed(msg: str) -> None:
             self._refreshing = False
+            log.warning("Card log refresh failed: %s", msg)
             self.panel.set_note(f"Card log refresh failed: {msg}")
 
         run_async(work, done, failed)
@@ -225,6 +230,7 @@ class EventBackupController(QObject):
     def on_volume_added(self, volume: devices.Volume) -> None:
         if not self.active:
             return
+        log.info("Card detected: %s at %s", volume.display_name, volume.path)
         tgt = self._target_entry()
         if not tgt:
             return
@@ -386,6 +392,7 @@ class EventBackupController(QObject):
         )
         job = self.jobs.submit_offload(request)
         self._job_links[job.id] = (entry.id, slot)
+        log.info("Card log offload submitted: job %s for entry %s slot %d (%s)", job.id, entry.id, slot, entry.describe(slot))
         self.statuses[(entry.id, slot)] = job.state if job.state in ACTIVE_STATES else "queued"
         self.panel.set_status(entry.id, slot, self.statuses[(entry.id, slot)])
         self.message.emit(f"Offload started: {request.title}")
@@ -443,6 +450,7 @@ class EventBackupController(QObject):
 
         def done(matched: bool) -> None:
             self._syncing.discard((entry_id, slot))
+            log.info("Write-back OK: entry %s slot %d marked backed up (matched=%s)", entry_id, slot, matched)
             if self.log_event and self.log_event.id == event_id:
                 e = self.log_event.find_entry(entry_id)
                 if e is not None:
@@ -458,6 +466,7 @@ class EventBackupController(QObject):
         def failed(msg: str) -> None:
             self._syncing.discard((entry_id, slot))
             production.queue_writeback(entry_id, slot)
+            log.warning("Write-back failed for entry %s slot %d (queued for retry): %s", entry_id, slot, msg)
             self.statuses[(entry_id, slot)] = "verified_unsynced"
             self.panel.set_status(entry_id, slot, "verified_unsynced")
             self._update_pending_note(msg)
