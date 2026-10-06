@@ -59,6 +59,7 @@ JUNK_NAMES = {
 }
 JUNK_PREFIXES = ("._",)
 REPORT_NAME = "OFFLOAD_REPORT.txt"
+CONFLICTS_DIR = "_CONFLICTS"
 log = logging.getLogger(__name__)
 
 
@@ -85,6 +86,9 @@ class OffloadRequest:
     # Card-relative top-level folders to copy (e.g. ("DCIM",) or ("PRIVATE/M4ROOT",)).
     # Empty = copy the whole source. Structure under each root is preserved.
     include_roots: tuple[str, ...] = ()
+    # Repair mode: when a destination file differs from the card, move it aside into
+    # <destination>/_CONFLICTS/ and copy a fresh one. Nothing is ever deleted.
+    repair_conflicts: bool = False
 
     @property
     def card_label(self) -> str:
@@ -426,6 +430,7 @@ class OffloadEngine:
         part = dest.with_name(dest.name + ".part")
         dest.parent.mkdir(parents=True, exist_ok=True)
 
+        repaired_note = ""
         if dest.exists():
             # Never overwrite. Decide whether it is the same file (resume) or a clash.
             self.progress.phase = "verifying"
@@ -441,11 +446,23 @@ class OffloadEngine:
                 raise
             except OSError as exc:
                 return FileOutcome(entry.relative, "error", detail=str(exc))
-            return FileOutcome(
-                entry.relative,
-                "conflict",
-                detail="A different file with this name already exists at the destination",
-            )
+            if not self.request.repair_conflicts:
+                return FileOutcome(
+                    entry.relative,
+                    "conflict",
+                    detail="A different file with this name already exists at the destination",
+                )
+            # Repair: keep the old copy (moved aside), then fall through and copy fresh.
+            aside = _unique_path(self.request.destination / CONFLICTS_DIR / Path(*entry.relative.split("/")))
+            try:
+                aside.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(dest, aside)
+            except OSError as exc:
+                return FileOutcome(entry.relative, "error", detail=f"Could not move conflicting file aside: {exc}")
+            repaired_note = f"replaced; previous copy moved to {aside.relative_to(self.request.destination).as_posix()}"
+            log.info("Repair: %s differed from card, moved to %s", entry.relative, aside)
+            # The copy below re-reads the source and the new destination.
+            self.progress.bytes_total += entry.size * 2
 
         last_error = ""
         for attempt in range(2):
@@ -473,7 +490,7 @@ class OffloadEngine:
                     shutil.copystat(entry.source, dest, follow_symlinks=False)
                 except OSError:
                     pass
-                return FileOutcome(entry.relative, "copied", src_hash)
+                return FileOutcome(entry.relative, "copied", src_hash, detail=repaired_note)
             except Cancelled:
                 _unlink(part)
                 raise
@@ -519,6 +536,7 @@ def write_report(result: OffloadResult, scan: ScanResult) -> Path:
         f"Source:        {req.source}",
         f"Source volume: {req.source_label}",
         f"Copied roots:  {', '.join(req.include_roots) if req.include_roots else 'entire source'}",
+        f"Repair mode:   {'yes - differing files moved to ' + CONFLICTS_DIR if req.repair_conflicts else 'no'}",
         f"Destination:   {req.destination}",
         f"Started:       {result.started.astimezone().isoformat(timespec='seconds')}",
         f"Finished:      {result.finished.astimezone().isoformat(timespec='seconds')}",

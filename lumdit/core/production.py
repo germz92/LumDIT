@@ -14,6 +14,7 @@ Hierarchy generated for each selected category::
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -58,12 +59,15 @@ class OffloadRecord:
     # Link back to the crew app's card log (empty when offloaded manually).
     log_entry_id: str = ""
     log_slot: int = 0
+    # Card-relative roots that were copied (empty = whole source); lets a repair re-run the same job.
+    include_roots: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "OffloadRecord":
         kwargs = {k: d.get(k) for k in cls.__dataclass_fields__ if k in d}
         kwargs.setdefault("log_entry_id", "")
         kwargs.setdefault("log_slot", 0)
+        kwargs["include_roots"] = list(kwargs.get("include_roots") or [])
         return cls(**kwargs)  # type: ignore[arg-type]
 
 
@@ -184,6 +188,14 @@ class Production:
 
     def offloads_for_log_entry(self, entry_id: str, slot: int) -> list[OffloadRecord]:
         return [r for r in self.offloads if r.log_entry_id == entry_id and r.log_slot == slot]
+
+    def offload_for_destination(self, folder: Path | str) -> OffloadRecord | None:
+        """Most recent offload record whose destination is *folder* (used to repair from a manifest)."""
+        target = os.path.normcase(os.path.abspath(str(folder)))
+        for rec in reversed(self.offloads):
+            if os.path.normcase(os.path.abspath(rec.destination)) == target:
+                return rec
+        return None
 
     # ---- card-log write-back queue -------------------------------------------------
     def queue_writeback(self, entry_id: str, slot: int) -> None:

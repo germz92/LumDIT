@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, Qt, QTimer, QUrl
@@ -25,7 +26,7 @@ from lumdit import APP_NAME, __version__
 from lumdit.core import devices
 from lumdit.core.jobs import Job, JobManager
 from lumdit.core.mhl import VerifyResult, find_manifests
-from lumdit.core.offload import OffloadResult
+from lumdit.core.offload import OffloadRequest, OffloadResult
 from lumdit.core.production import OffloadRecord, Production, ProductionError
 from lumdit.logging_setup import log_dir, log_path
 from lumdit.settings import Settings, cache_dir
@@ -188,8 +189,9 @@ class MainWindow(QMainWindow):
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         tb.addWidget(spacer)
-        self.job_panel = JobPanel(self.jobs)
+        self.job_panel = JobPanel(self.jobs, self.settings)
         self.job_panel.show_result.connect(self._show_job_result)
+        self.job_panel.retry_requested.connect(self._retry_job)
         tb.addWidget(self.job_panel)
         self.addToolBar(tb)
 
@@ -392,6 +394,7 @@ class MainWindow(QMainWindow):
                         status=result.status,
                         log_entry_id=req.log_entry_id,
                         log_slot=req.log_slot,
+                        include_roots=list(req.include_roots),
                     )
                 )
             except OSError as exc:
@@ -410,16 +413,93 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"{job.title}: {result.message}", 10000)
             if result.status in ("issues", "error"):
-                OffloadResultDialog(result, self).show()
+                self._show_offload_result(result)
+
+    def _show_offload_result(self, result: OffloadResult) -> None:
+        dlg = OffloadResultDialog(result, self)
+        dlg.repair_requested.connect(self.resubmit_offload)
+        dlg.show()
+
+    def _show_verify_results(self, results: list[VerifyResult]) -> None:
+        dlg = VerifyResultDialog(results, self)
+        dlg.repair_requested.connect(self.repair_folder)
+        dlg.show()
 
     def _show_job_result(self, job_id: int) -> None:
         job = self.jobs.jobs.get(job_id)
         if not job or job.result is None:
             return
         if isinstance(job.result, OffloadResult):
-            OffloadResultDialog(job.result, self).show()
+            self._show_offload_result(job.result)
         elif isinstance(job.result, VerifyResult):
-            VerifyResultDialog([job.result], self).show()
+            self._show_verify_results([job.result])
+
+    def _retry_job(self, job_id: int) -> None:
+        """'Retry' from the job list: re-run an offload that failed, was cancelled or had issues."""
+        job = self.jobs.jobs.get(job_id)
+        if not job or job.kind != "offload":
+            return
+        if isinstance(job.result, OffloadResult) and job.result.problems:
+            # Let the result dialog ask what to do about differing files.
+            self._show_offload_result(job.result)
+            return
+        self.resubmit_offload(job.payload, False)
+
+    def resubmit_offload(self, request: OffloadRequest, repair_conflicts: bool) -> None:
+        """Run *request* again. The engine skips verified files, copies missing/failed ones and,
+        in repair mode, moves differing destination files to _CONFLICTS before recopying."""
+        req = replace(request, repair_conflicts=repair_conflicts)
+        if not Path(req.source).is_dir():
+            QMessageBox.warning(
+                self,
+                "Card not available",
+                f"The source is not mounted:\n{req.source}\n\nInsert the card and try again"
+                + (f" ({req.source_label})." if req.source_label else "."),
+            )
+            return
+        if self.jobs.active_count and any(
+            j.state in ("running", "queued") and isinstance(j.payload, OffloadRequest) and j.payload.destination == req.destination
+            for j in self.jobs.jobs.values()
+        ):
+            QMessageBox.information(self, "Already running", f"A job for {req.destination.name} is already in progress.")
+            return
+        job = self.jobs.submit_offload(req)
+        if req.log_entry_id and self.event_backup.active:
+            self.event_backup.track_manual_job(job, req.log_entry_id, req.log_slot)
+        log.info("Resubmitted offload %s (repair_conflicts=%s) as job %s", req.title, repair_conflicts, job.id)
+        self.statusBar().showMessage(f"{'Repair' if repair_conflicts else 'Retry'} started: {job.title}", 6000)
+
+    def repair_folder(self, folder: Path) -> None:
+        """Repair a card folder whose manifest verification failed, using its recorded offload."""
+        if not self.production:
+            QMessageBox.information(self, "No production", "Open the production this folder belongs to first.")
+            return
+        rec = self.production.offload_for_destination(folder)
+        if rec is None:
+            QMessageBox.information(
+                self,
+                "No offload record",
+                f"LumDIT has no record of how {Path(folder).name} was offloaded, so it cannot repair it "
+                "automatically. Offload the card again manually to the same folder; verified files are skipped.",
+            )
+            return
+        shoot = date.fromisoformat(rec.date) if rec.date else None
+        req = OffloadRequest(
+            source=Path(rec.source),
+            destination=Path(rec.destination),
+            client_name=self.production.client,
+            production_name=self.production.name,
+            category=rec.category,
+            shoot_date=shoot,
+            camera=rec.camera,
+            operator=rec.operator,
+            card_number=rec.card,
+            source_label=rec.source_label,
+            log_entry_id=rec.log_entry_id,
+            log_slot=rec.log_slot,
+            include_roots=tuple(rec.include_roots),
+        )
+        self.resubmit_offload(req, True)
 
     # ---- verify ------------------------------------------------------------------------
     def _verify_pick(self) -> None:
@@ -457,7 +537,7 @@ class MainWindow(QMainWindow):
                     results = self._verify_results.pop(batch_id)
                     del self._verify_batches[batch_id]
                     if results:
-                        VerifyResultDialog(results, self).show()
+                        self._show_verify_results(results)
                 break
 
     # ---- misc ------------------------------------------------------------------------

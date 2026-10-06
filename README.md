@@ -134,3 +134,12 @@ right-click > Open on first launch.
 
 Jobs run concurrently (default 2) but never two readers on the same card. The computer is kept awake while jobs run.
 Use **Verify...** on any folder to re-check its files against the manifests before wiping cards.
+
+### Retry / Repair
+
+When an offload finishes with issues, fails or is cancelled, the result dialog and the **Jobs** window offer
+**Retry / Repair**. With the card still inserted it re-runs the same job: files already verified are skipped,
+missing or failed files are copied, and a fresh manifest is written. If some destination files *differ* from the
+card you are asked whether to keep them or move them into `_CONFLICTS/` (same relative path) before recopying.
+**Repair from card...** in the verification dialog does the same for a folder whose manifest check failed.
+Nothing is ever overwritten or deleted.

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QByteArray, QPoint, Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from lumdit.core.jobs import Job, JobManager
+from lumdit.settings import Settings
 from lumdit.ui.util import human_eta, human_rate, muted_css
 
 _STATE_TEXT = {
@@ -30,10 +31,12 @@ _STATE_TEXT = {
 class JobRow(QFrame):
     cancel_clicked = Signal(int)
     show_result = Signal(int)
+    retry_clicked = Signal(int)
 
     def __init__(self, job: Job, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.job_id = job.id
+        self.kind = job.kind
         self.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -48,6 +51,12 @@ class JobRow(QFrame):
         self.cancel_btn.setText("Cancel")
         self.cancel_btn.clicked.connect(lambda: self.cancel_clicked.emit(self.job_id))
         top.addWidget(self.cancel_btn)
+        self.retry_btn = QToolButton()
+        self.retry_btn.setText("Retry")
+        self.retry_btn.setToolTip("Run this offload again. Verified files are skipped; missing or failed files are copied.")
+        self.retry_btn.clicked.connect(lambda: self.retry_clicked.emit(self.job_id))
+        self.retry_btn.hide()
+        top.addWidget(self.retry_btn)
         self.result_btn = QToolButton()
         self.result_btn.setText("Details")
         self.result_btn.clicked.connect(lambda: self.show_result.emit(self.job_id))
@@ -86,23 +95,37 @@ class JobRow(QFrame):
         finished = job.state in ("done", "failed", "cancelled")
         self.cancel_btn.setVisible(not finished)
         self.result_btn.setVisible(finished and job.result is not None)
-        self.setStyleSheet(
-            "QFrame { border-left: 3px solid %s; }"
-            % {"done": "#2ea043", "failed": "#d9534f", "cancelled": "#999999"}.get(job.state, "palette(highlight)")
+        # Offloads that did not finish clean can be re-run; verified files are skipped by the engine.
+        result_status = getattr(job.result, "status", None)
+        needs_retry = finished and self.kind == "offload" and (
+            job.state in ("failed", "cancelled") or result_status in ("issues", "error", "cancelled")
         )
+        self.retry_btn.setVisible(needs_retry)
+        colour = {"done": "#2ea043", "failed": "#d9534f", "cancelled": "#999999"}.get(job.state, "palette(highlight)")
+        if job.state == "done" and result_status in ("issues", "error"):
+            colour = "#e0a800"
+        self.setStyleSheet("QFrame { border-left: 3px solid %s; }" % colour)
 
 
 class JobListPopup(QFrame):
-    def __init__(self, manager: JobManager, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Popup)
+    """Resizable floating window listing every job. Size/position are remembered between runs."""
+
+    GEOMETRY_KEY = "jobs_window"
+
+    def __init__(self, manager: JobManager, parent: QWidget | None = None, settings: Settings | None = None) -> None:
+        # A Tool window (not a Popup) so the user can resize it and keep it open while working.
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.WindowCloseButtonHint)
         self.manager = manager
+        self.settings = settings
+        self.setWindowTitle("Jobs")
         self.setFrameShape(QFrame.Shape.StyledPanel)
-        self.setMinimumWidth(460)
-        self.setMaximumHeight(520)
+        self.setMinimumSize(420, 260)
+        self.resize(560, 680)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
         head = QHBoxLayout()
-        head.addWidget(QLabel("<b>Jobs</b>"), 1)
+        self.head_label = QLabel("<b>Jobs</b>")
+        head.addWidget(self.head_label, 1)
         clear = QPushButton("Clear finished")
         clear.clicked.connect(self.clear_finished)
         head.addWidget(clear)
@@ -121,20 +144,24 @@ class JobListPopup(QFrame):
         self.empty.setStyleSheet(muted_css(self))
         layout.addWidget(self.empty)
         self.rows: dict[int, JobRow] = {}
+        self._restored = False
 
-    def add_job(self, job: Job, on_show_result) -> JobRow:
+    def add_job(self, job: Job, on_show_result, on_retry) -> JobRow:
         row = JobRow(job)
         row.cancel_clicked.connect(self.manager.cancel)
         row.show_result.connect(on_show_result)
+        row.retry_clicked.connect(on_retry)
         self.rows_layout.insertWidget(0, row)
         self.rows[job.id] = row
         self.empty.hide()
+        self._update_head()
         return row
 
     def update_job(self, job: Job) -> None:
         row = self.rows.get(job.id)
         if row:
             row.update_job(job)
+        self._update_head()
 
     def clear_finished(self) -> None:
         for jid, row in list(self.rows.items()):
@@ -144,17 +171,49 @@ class JobListPopup(QFrame):
                 row.deleteLater()
                 del self.rows[jid]
         self.empty.setVisible(not self.rows)
+        self._update_head()
+
+    def _update_head(self) -> None:
+        jobs = [self.manager.jobs.get(j) for j in self.rows]
+        active = sum(1 for j in jobs if j and j.state in ("running", "queued"))
+        text = f"<b>Jobs</b> ({len(self.rows)})" if self.rows else "<b>Jobs</b>"
+        if active:
+            text += f" - {active} active"
+        self.head_label.setText(text)
+
+    # ---- geometry persistence ---------------------------------------------------------
+    def restore_geometry(self) -> bool:
+        if self._restored or self.settings is None:
+            return self._restored
+        self._restored = True
+        g = self.settings.geometry(self.GEOMETRY_KEY)
+        if isinstance(g, QByteArray) and not g.isEmpty():
+            return self.restoreGeometry(g)
+        return False
+
+    def _save_geometry(self) -> None:
+        if self.settings is not None:
+            self.settings.save_geometry(self.GEOMETRY_KEY, self.saveGeometry())
+
+    def hideEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        self._save_geometry()
+        super().hideEvent(event)
+
+    def closeEvent(self, event) -> None:  # noqa: N802 (Qt override)
+        self._save_geometry()
+        super().closeEvent(event)
 
 
 class JobPanel(QWidget):
     """Compact toolbar widget: overall progress + button that opens the job list."""
 
     show_result = Signal(int)
+    retry_requested = Signal(int)
 
-    def __init__(self, manager: JobManager, parent: QWidget | None = None) -> None:
+    def __init__(self, manager: JobManager, settings: Settings | None = None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.manager = manager
-        self.popup = JobListPopup(manager, self)
+        self.popup = JobListPopup(manager, self, settings)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 0, 4, 0)
         layout.setSpacing(6)
@@ -183,13 +242,22 @@ class JobPanel(QWidget):
         if self.popup.isVisible():
             self.popup.hide()
             return
-        self.popup.adjustSize()
-        pos = self.btn.mapToGlobal(QPoint(self.btn.width() - self.popup.width(), self.btn.height() + 4))
-        self.popup.move(pos)
+        if not self.popup.restore_geometry():
+            # First open: hang the window under the toolbar button, right-aligned, and keep it on screen.
+            pos = self.btn.mapToGlobal(QPoint(self.btn.width() - self.popup.width(), self.btn.height() + 4))
+            screen = self.btn.screen()
+            if screen is not None:
+                avail = screen.availableGeometry()
+                height = min(self.popup.height(), avail.height() - (pos.y() - avail.y()) - 24)
+                self.popup.resize(self.popup.width(), max(height, self.popup.minimumHeight()))
+                pos.setX(max(avail.left(), min(pos.x(), avail.right() - self.popup.width())))
+            self.popup.move(pos)
         self.popup.show()
+        self.popup.raise_()
+        self.popup.activateWindow()
 
     def _added(self, job: Job) -> None:
-        self.popup.add_job(job, self.show_result.emit)
+        self.popup.add_job(job, self.show_result.emit, self.retry_requested.emit)
         self._summary()
 
     def _updated(self, job: Job) -> None:

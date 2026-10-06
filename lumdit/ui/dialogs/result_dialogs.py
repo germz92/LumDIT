@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -36,6 +37,10 @@ def _table(headers: list[str], rows: list[list[str]]) -> QTableWidget:
 
 
 class OffloadResultDialog(QDialog):
+    # (request, repair_conflicts): re-run the same offload. Missing/failed files are copied,
+    # identical ones skipped; with repair_conflicts differing destination files are moved aside.
+    repair_requested = Signal(object, bool)
+
     def __init__(self, result: OffloadResult, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.result = result
@@ -62,6 +67,15 @@ class OffloadResultDialog(QDialog):
         layout.addWidget(_table(["Status", "xxHash64", "File", "Detail"], rows), 1)
 
         btns = QHBoxLayout()
+        if result.status != "verified":
+            self.repair_btn = QPushButton("Retry / Repair")
+            self.repair_btn.setDefault(True)
+            self.repair_btn.setToolTip(
+                "Run this offload again with the card inserted: files that are missing or failed are copied,\n"
+                "files already verified are skipped. Nothing is overwritten or deleted."
+            )
+            self.repair_btn.clicked.connect(self._repair)
+            btns.addWidget(self.repair_btn)
         if result.report_path:
             open_report = QPushButton("Open report")
             open_report.clicked.connect(lambda: open_with_system(result.report_path))
@@ -76,8 +90,35 @@ class OffloadResultDialog(QDialog):
         btns.addWidget(close)
         layout.addLayout(btns)
 
+    def _repair(self) -> None:
+        conflicts = [f for f in self.result.files if f.status == "conflict"]
+        repair_conflicts = False
+        if conflicts:
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("Differing files")
+            box.setText(f"{len(conflicts)} file(s) at the destination differ from the card.")
+            box.setInformativeText(
+                "Move the destination copies into a _CONFLICTS folder and copy fresh from the card?\n\n"
+                "Choose Keep to leave them as they are and only copy missing or failed files."
+            )
+            replace = box.addButton("Move aside && recopy", QMessageBox.ButtonRole.AcceptRole)
+            keep = box.addButton("Keep", QMessageBox.ButtonRole.ActionRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.setDefaultButton(keep)
+            box.exec()
+            if box.clickedButton() == replace:
+                repair_conflicts = True
+            elif box.clickedButton() != keep:
+                return
+        self.repair_requested.emit(self.result.request, repair_conflicts)
+        self.accept()
+
 
 class VerifyResultDialog(QDialog):
+    # Card folder (destination) whose manifest had problems: re-run its offload in repair mode.
+    repair_requested = Signal(object)
+
     def __init__(self, results: list[VerifyResult], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Verification Results")
@@ -98,7 +139,24 @@ class VerifyResultDialog(QDialog):
         else:
             rows = [[r.manifest.parent.name, r.manifest.name, str(r.checked), "OK"] for r in results]
             layout.addWidget(_table(["Card folder", "Manifest", "Files", "Status"], rows), 1)
+        btns = QHBoxLayout()
+        self.bad_folders = sorted({r.manifest.parent for r, _ in issues}, key=str)
+        if self.bad_folders:
+            repair = QPushButton("Repair from card..." if len(self.bad_folders) == 1 else "Repair from cards...")
+            repair.setToolTip(
+                "Insert the original card and re-run the offload for the affected folder: missing files are\n"
+                "copied and differing files are moved to _CONFLICTS before a fresh copy. Nothing is deleted."
+            )
+            repair.clicked.connect(self._repair)
+            btns.addWidget(repair)
+        btns.addStretch(1)
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.reject)
         close.accepted.connect(self.accept)
-        layout.addWidget(close)
+        btns.addWidget(close)
+        layout.addLayout(btns)
+
+    def _repair(self) -> None:
+        for folder in self.bad_folders:
+            self.repair_requested.emit(folder)
+        self.accept()

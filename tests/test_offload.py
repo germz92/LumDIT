@@ -173,6 +173,38 @@ def test_offload_resume_skips_identical_and_flags_conflicts(tmp_path):
     assert v.issues[0].kind == "hash"
 
 
+def test_repair_recopies_missing_and_moves_differing_files_aside(tmp_path):
+    from dataclasses import replace
+
+    from lumdit.core.offload import CONFLICTS_DIR
+
+    card = make_card(tmp_path)
+    dest = tmp_path / "dest"
+    req = OffloadRequest(source=card, destination=dest, chunk_size=64 * 1024)
+    first = OffloadEngine(req).run()
+    assert first.status == "verified"
+
+    tampered = dest / "DCIM" / "100MSDCF" / "DSC00001.JPG"
+    tampered.write_bytes(b"corrupt")
+    missing = dest / "DCIM" / "100MSDCF" / "DSC00001.ARW"
+    missing.unlink()
+
+    repaired = OffloadEngine(replace(req, repair_conflicts=True)).run()
+    assert repaired.status == "verified"
+    assert repaired.copied == 2 and repaired.skipped == 2
+    # Fresh copies match the card again.
+    assert xxh64_file(tampered) == xxh64_file(card / "DCIM" / "100MSDCF" / "DSC00001.JPG")
+    assert missing.exists()
+    # The bad copy was preserved, not deleted.
+    aside = dest / CONFLICTS_DIR / "DCIM" / "100MSDCF" / "DSC00001.JPG"
+    assert aside.read_bytes() == b"corrupt"
+    note = next(f for f in repaired.files if f.relative == "DCIM/100MSDCF/DSC00001.JPG")
+    assert "moved to" in note.detail
+    # A new manifest covers every file, and verifying it passes.
+    assert verify_manifest(repaired.mhl_path).passed
+    assert "Repair mode:   yes" in repaired.report_path.read_text(encoding="utf-8")
+
+
 def test_verify_detects_missing_files(tmp_path):
     card = make_card(tmp_path)
     dest = tmp_path / "dest"
