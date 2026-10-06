@@ -183,7 +183,7 @@ class EventBackupController(QObject):
         e = self.log_event.find_entry(entry_id) if self.log_event else None
         if e is None or not e.offloadable(slot) or e.backed_up(slot):
             return False
-        return self.statuses.get((entry_id, slot)) not in (*ACTIVE_STATES, "verified_unsynced")
+        return self.statuses.get((entry_id, slot)) not in (*ACTIVE_STATES, "paused", "verified_unsynced")
 
     def _next_pending(self) -> CardLogEntry | None:
         if not self.log_event:
@@ -412,9 +412,12 @@ class EventBackupController(QObject):
 
     def on_job_updated(self, job: Job) -> None:
         link = self._job_links.get(job.id)
-        if link and job.state in ACTIVE_STATES and self.statuses.get(link) != job.state:
-            self.statuses[link] = job.state
-            self.panel.set_status(link[0], link[1], job.state)
+        if not link or job.state not in ACTIVE_STATES:
+            return
+        status = "paused" if job.paused else job.state
+        if self.statuses.get(link) != status:
+            self.statuses[link] = status
+            self.panel.set_status(link[0], link[1], status)
 
     def on_job_finished(self, job: Job) -> None:
         link = self._job_links.pop(job.id, None)

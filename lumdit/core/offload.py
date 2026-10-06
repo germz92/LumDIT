@@ -135,6 +135,7 @@ class OffloadProgress:
     current_file: str = ""
     speed_bps: float = 0.0
     eta_seconds: float | None = None
+    paused: bool = False
 
     @property
     def fraction(self) -> float:
@@ -232,6 +233,23 @@ def _is_within(child: Path, parent: Path) -> bool:
         return False
 
 
+def wait_while_paused(
+    pause: threading.Event,
+    cancel: threading.Event,
+    on_change: Callable[[bool], None] | None = None,
+) -> None:
+    """Block the calling worker while *pause* is set. Returns as soon as it is cleared or
+    *cancel* is set. *on_change* is called with True when the wait starts and False when it ends."""
+    if not pause.is_set() or cancel.is_set():
+        return
+    if on_change is not None:
+        on_change(True)
+    while pause.is_set() and not cancel.is_set():
+        cancel.wait(0.2)
+    if on_change is not None:
+        on_change(False)
+
+
 class _Speedometer:
     """Rolling-window throughput estimate."""
 
@@ -261,24 +279,42 @@ class OffloadEngine:
         request: OffloadRequest,
         progress: ProgressCallback | None = None,
         cancel_event: threading.Event | None = None,
+        pause_event: threading.Event | None = None,
     ) -> None:
         self.request = request
         self._progress_cb = progress
         self._cancel = cancel_event or threading.Event()
+        self._pause = pause_event or threading.Event()
         self.progress = OffloadProgress()
         self._speed = _Speedometer()
         self._last_emit = 0.0
 
     # ---- helpers ------------------------------------------------------------
     def cancelled(self) -> bool:
+        """Chunk/file-level hook: blocks while paused; returns True once cancelled.
+
+        Called before every chunk read, so a pause takes effect within one chunk and the
+        open file handles simply wait. Cancelling a paused job releases it immediately.
+        """
+        if self._pause.is_set() and not self._cancel.is_set():
+            wait_while_paused(self._pause, self._cancel, self._set_paused)
         return self._cancel.is_set()
+
+    def _set_paused(self, paused: bool) -> None:
+        self.progress.paused = paused
+        if not paused:
+            self._speed = _Speedometer()  # don't let the idle gap drag the rate/ETA down
+        self.progress.speed_bps = 0.0
+        self.progress.eta_seconds = None
+        self._last_emit = 0.0
+        self._emit(force=True)
 
     def _emit(self, force: bool = False) -> None:
         now = time.monotonic()
         if not force and now - self._last_emit < 0.1:
             return
         self._last_emit = now
-        self.progress.speed_bps = self._speed.bps()
+        self.progress.speed_bps = 0.0 if self.progress.paused else self._speed.bps()
         remaining = self.progress.bytes_total - self.progress.bytes_done
         self.progress.eta_seconds = (
             remaining / self.progress.speed_bps if self.progress.speed_bps > 0 else None
@@ -401,8 +437,11 @@ class OffloadEngine:
             return result
 
         except Cancelled:
-            status, message = "cancelled", "Cancelled by user"
+            done = sum(1 for o in outcomes if o.status in ("copied", "skipped-identical"))
+            status = "cancelled"
+            message = f"Cancelled after {done} of {self.progress.files_total} files - Resume to continue"
             self.progress.phase = "cancelled"
+            self.progress.paused = False
             log.info("Offload cancelled: %s after %d files", req.title, len(outcomes))
         except (OffloadError, OSError) as exc:
             status, message = "error", str(exc)

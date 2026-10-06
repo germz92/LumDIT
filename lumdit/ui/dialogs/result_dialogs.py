@@ -68,10 +68,13 @@ class OffloadResultDialog(QDialog):
 
         btns = QHBoxLayout()
         if result.status != "verified":
-            self.repair_btn = QPushButton("Retry / Repair")
+            cancelled = result.status == "cancelled"
+            self.repair_btn = QPushButton("Resume" if cancelled else "Retry / Repair")
             self.repair_btn.setDefault(True)
             self.repair_btn.setToolTip(
-                "Run this offload again with the card inserted: files that are missing or failed are copied,\n"
+                "Continue this offload with the card inserted: files already copied and verified are skipped."
+                if cancelled
+                else "Run this offload again with the card inserted: files that are missing or failed are copied,\n"
                 "files already verified are skipped. Nothing is overwritten or deleted."
             )
             self.repair_btn.clicked.connect(self._repair)

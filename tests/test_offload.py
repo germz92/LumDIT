@@ -205,6 +205,58 @@ def test_repair_recopies_missing_and_moves_differing_files_aside(tmp_path):
     assert "Repair mode:   yes" in repaired.report_path.read_text(encoding="utf-8")
 
 
+def test_pause_blocks_worker_and_resume_continues(tmp_path):
+    import time
+
+    card = make_card(tmp_path)
+    dest = tmp_path / "dest"
+    cancel, pause = threading.Event(), threading.Event()
+    seen: list[bool] = []
+    engine = OffloadEngine(
+        OffloadRequest(source=card, destination=dest, chunk_size=64 * 1024),
+        progress=lambda p: seen.append(p.paused),
+        cancel_event=cancel,
+        pause_event=pause,
+    )
+    pause.set()  # paused before it even starts: must block at the first chunk
+    t = threading.Thread(target=lambda: setattr(engine, "_out", engine.run()))
+    t.start()
+    time.sleep(0.4)
+    assert t.is_alive(), "paused engine must not finish"
+    assert engine.progress.paused is True and engine.progress.speed_bps == 0.0
+    assert engine.progress.files_done == 0
+    pause.clear()
+    t.join(timeout=20)
+    assert not t.is_alive()
+    result = engine._out
+    assert result.status == "verified" and result.copied == 4
+    assert result.files and engine.progress.paused is False
+    assert True in seen and seen[-1] is False
+
+
+def test_cancel_while_paused_releases_immediately(tmp_path):
+    import time
+
+    card = make_card(tmp_path)
+    dest = tmp_path / "dest"
+    cancel, pause = threading.Event(), threading.Event()
+    engine = OffloadEngine(OffloadRequest(source=card, destination=dest, chunk_size=64 * 1024), cancel_event=cancel, pause_event=pause)
+    pause.set()
+    t = threading.Thread(target=lambda: setattr(engine, "_out", engine.run()))
+    t.start()
+    time.sleep(0.3)
+    cancel.set()
+    t.join(timeout=5)
+    assert not t.is_alive()
+    assert engine._out.status == "cancelled"
+    assert "Resume to continue" in engine._out.message
+    assert not list(dest.rglob("*.part"))
+    # Resuming (same request, no pause) finishes the job; nothing already verified is recopied.
+    second = OffloadEngine(OffloadRequest(source=card, destination=dest, chunk_size=64 * 1024)).run()
+    assert second.status == "verified"
+    assert second.copied + second.skipped == 4
+
+
 def test_verify_detects_missing_files(tmp_path):
     card = make_card(tmp_path)
     dest = tmp_path / "dest"

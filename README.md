@@ -135,6 +135,16 @@ right-click > Open on first launch.
 Jobs run concurrently (default 2) but never two readers on the same card. The computer is kept awake while jobs run.
 Use **Verify...** on any folder to re-check its files against the manifests before wiping cards.
 
+### Pause / Resume
+
+Every running or queued job has a **Pause** button in the Jobs window (plus **Pause all** in its header). A paused
+copy stops at the next 8 MiB chunk with its files still open and continues from exactly that point when resumed;
+no bytes are re-read. While a job is paused its slot is freed so other cards keep copying, and the machine is
+allowed to sleep if nothing else is running. Cancelling a paused job releases it immediately.
+
+A **cancelled** offload is resumable too: its row and result dialog show **Resume**, which re-runs the job so
+files already copied and verified are skipped and only the remainder is copied.
+
 ### Retry / Repair
 
 When an offload finishes with issues, fails or is cancelled, the result dialog and the **Jobs** window offer

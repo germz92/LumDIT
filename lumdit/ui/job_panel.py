@@ -32,6 +32,8 @@ class JobRow(QFrame):
     cancel_clicked = Signal(int)
     show_result = Signal(int)
     retry_clicked = Signal(int)
+    pause_clicked = Signal(int)
+    resume_clicked = Signal(int)
 
     def __init__(self, job: Job, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -47,13 +49,18 @@ class JobRow(QFrame):
         top.addWidget(self.title, 1)
         self.state = QLabel("")
         top.addWidget(self.state)
+        self.pause_btn = QToolButton()
+        self.pause_btn.setText("Pause")
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.setToolTip("Pause this job. It continues exactly where it stopped when resumed.")
+        self.pause_btn.clicked.connect(self._pause_toggled)
+        top.addWidget(self.pause_btn)
         self.cancel_btn = QToolButton()
         self.cancel_btn.setText("Cancel")
         self.cancel_btn.clicked.connect(lambda: self.cancel_clicked.emit(self.job_id))
         top.addWidget(self.cancel_btn)
         self.retry_btn = QToolButton()
         self.retry_btn.setText("Retry")
-        self.retry_btn.setToolTip("Run this offload again. Verified files are skipped; missing or failed files are copied.")
         self.retry_btn.clicked.connect(lambda: self.retry_clicked.emit(self.job_id))
         self.retry_btn.hide()
         top.addWidget(self.retry_btn)
@@ -74,18 +81,26 @@ class JobRow(QFrame):
         layout.addWidget(self.detail)
         self.update_job(job)
 
+    def _pause_toggled(self, checked: bool) -> None:
+        (self.pause_clicked if checked else self.resume_clicked).emit(self.job_id)
+
     def update_job(self, job: Job) -> None:
         p = job.progress
+        paused = job.paused
         self.bar.setValue(int(p.fraction * 1000))
         if job.state == "running":
-            phase = p.phase.capitalize()
-            self.state.setText(phase)
-            self.detail.setText(
-                f"{p.files_done}/{p.files_total} files  |  {human_rate(p.speed_bps)}  |  ETA {human_eta(p.eta_seconds)}"
-                + (f"\n{p.current_file}" if p.current_file else "")
-            )
+            self.state.setText("Paused" if paused else p.phase.capitalize())
+            if paused:
+                self.detail.setText(
+                    f"{p.files_done}/{p.files_total} files  |  paused" + (f"\n{p.current_file}" if p.current_file else "")
+                )
+            else:
+                self.detail.setText(
+                    f"{p.files_done}/{p.files_total} files  |  {human_rate(p.speed_bps)}  |  ETA {human_eta(p.eta_seconds)}"
+                    + (f"\n{p.current_file}" if p.current_file else "")
+                )
         elif job.state == "queued":
-            self.state.setText("Queued")
+            self.state.setText("Paused" if paused else "Queued")
             self.detail.setText(job.message)
         else:
             self.state.setText(_STATE_TEXT.get(job.state, job.state))
@@ -94,6 +109,11 @@ class JobRow(QFrame):
                 self.bar.setValue(1000)
         finished = job.state in ("done", "failed", "cancelled")
         self.cancel_btn.setVisible(not finished)
+        self.pause_btn.setVisible(not finished)
+        self.pause_btn.blockSignals(True)
+        self.pause_btn.setChecked(paused)
+        self.pause_btn.setText("Resume" if paused else "Pause")
+        self.pause_btn.blockSignals(False)
         self.result_btn.setVisible(finished and job.result is not None)
         # Offloads that did not finish clean can be re-run; verified files are skipped by the engine.
         result_status = getattr(job.result, "status", None)
@@ -101,8 +121,16 @@ class JobRow(QFrame):
             job.state in ("failed", "cancelled") or result_status in ("issues", "error", "cancelled")
         )
         self.retry_btn.setVisible(needs_retry)
+        if job.state == "cancelled":
+            self.retry_btn.setText("Resume")
+            self.retry_btn.setToolTip("Continue this offload. Files already copied and verified are skipped.")
+        else:
+            self.retry_btn.setText("Retry")
+            self.retry_btn.setToolTip("Run this offload again. Verified files are skipped; missing or failed files are copied.")
         colour = {"done": "#2ea043", "failed": "#d9534f", "cancelled": "#999999"}.get(job.state, "palette(highlight)")
         if job.state == "done" and result_status in ("issues", "error"):
+            colour = "#e0a800"
+        elif paused:
             colour = "#e0a800"
         self.setStyleSheet("QFrame { border-left: 3px solid %s; }" % colour)
 
@@ -126,6 +154,11 @@ class JobListPopup(QFrame):
         head = QHBoxLayout()
         self.head_label = QLabel("<b>Jobs</b>")
         head.addWidget(self.head_label, 1)
+        self.pause_all_btn = QPushButton("Pause all")
+        self.pause_all_btn.setToolTip("Pause every running and queued job; press again to resume them.")
+        self.pause_all_btn.clicked.connect(self._pause_all_clicked)
+        self.pause_all_btn.hide()
+        head.addWidget(self.pause_all_btn)
         clear = QPushButton("Clear finished")
         clear.clicked.connect(self.clear_finished)
         head.addWidget(clear)
@@ -149,6 +182,8 @@ class JobListPopup(QFrame):
     def add_job(self, job: Job, on_show_result, on_retry) -> JobRow:
         row = JobRow(job)
         row.cancel_clicked.connect(self.manager.cancel)
+        row.pause_clicked.connect(self.manager.pause)
+        row.resume_clicked.connect(self.manager.resume)
         row.show_result.connect(on_show_result)
         row.retry_clicked.connect(on_retry)
         self.rows_layout.insertWidget(0, row)
@@ -174,12 +209,25 @@ class JobListPopup(QFrame):
         self._update_head()
 
     def _update_head(self) -> None:
-        jobs = [self.manager.jobs.get(j) for j in self.rows]
-        active = sum(1 for j in jobs if j and j.state in ("running", "queued"))
+        jobs = [j for j in (self.manager.jobs.get(i) for i in self.rows) if j]
+        active = [j for j in jobs if j.active]
+        paused = [j for j in active if j.paused]
         text = f"<b>Jobs</b> ({len(self.rows)})" if self.rows else "<b>Jobs</b>"
         if active:
-            text += f" - {active} active"
+            text += f" - {len(active)} active"
+            if paused:
+                text += f", {len(paused)} paused"
         self.head_label.setText(text)
+        self.pause_all_btn.setVisible(bool(active))
+        all_paused = bool(active) and len(paused) == len(active)
+        self.pause_all_btn.setText("Resume all" if all_paused else "Pause all")
+
+    def _pause_all_clicked(self) -> None:
+        active = [j for j in self.manager.jobs.values() if j.active]
+        if active and all(j.paused for j in active):
+            self.manager.resume_all()
+        else:
+            self.manager.pause_all()
 
     # ---- geometry persistence ---------------------------------------------------------
     def restore_geometry(self) -> bool:
@@ -278,14 +326,23 @@ class JobPanel(QWidget):
             self.btn.setText(f"Jobs ({len(self.manager.jobs)})" if self.manager.jobs else "Jobs")
             return
         running = [j for j in active if j.state == "running"]
+        paused = [j for j in active if j.paused]
         total = sum(j.progress.bytes_total for j in running)
         done = sum(j.progress.bytes_done for j in running)
-        speed = sum(j.progress.speed_bps for j in running)
+        speed = sum(j.progress.speed_bps for j in running if not j.paused)
         self.bar.show()
         self.bar.setValue(int(done / total * 1000) if total else 0)
         if len(active) == 1:
-            self.label.setText(active[0].title)
+            self.label.setText(active[0].title + (" (paused)" if paused else ""))
+        elif len(paused) == len(active):
+            self.label.setText(f"{len(active)} jobs paused")
         else:
-            self.label.setText(f"{len(running)} running, {len(active) - len(running)} queued")
-        self.rate.setText(human_rate(speed))
+            parts = [f"{len(running) - len([j for j in running if j.paused])} running"]
+            if paused:
+                parts.append(f"{len(paused)} paused")
+            queued = len(active) - len(running)
+            if queued:
+                parts.append(f"{queued} queued")
+            self.label.setText(", ".join(parts))
+        self.rate.setText("" if len(paused) == len(active) else human_rate(speed))
         self.btn.setText(f"Jobs ({len(active)})")

@@ -467,7 +467,14 @@ class MainWindow(QMainWindow):
         if req.log_entry_id and self.event_backup.active:
             self.event_backup.track_manual_job(job, req.log_entry_id, req.log_slot)
         log.info("Resubmitted offload %s (repair_conflicts=%s) as job %s", req.title, repair_conflicts, job.id)
-        self.statusBar().showMessage(f"{'Repair' if repair_conflicts else 'Retry'} started: {job.title}", 6000)
+        verb = "Repair" if repair_conflicts else ("Resume" if request.repair_conflicts is False and self._was_cancelled(request) else "Retry")
+        self.statusBar().showMessage(f"{verb} started: {job.title}", 6000)
+
+    def _was_cancelled(self, request: OffloadRequest) -> bool:
+        return any(
+            j.state == "cancelled" and isinstance(j.payload, OffloadRequest) and j.payload.destination == request.destination
+            for j in self.jobs.jobs.values()
+        )
 
     def repair_folder(self, folder: Path) -> None:
         """Repair a card folder whose manifest verification failed, using its recorded offload."""
@@ -581,11 +588,14 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.jobs.active_count:
+            paused = self.jobs.paused_count
             res = QMessageBox.question(
                 self,
                 "Jobs running",
-                f"{self.jobs.active_count} job(s) are still running. Quit and cancel them?\n\n"
-                "Partially copied files will be removed; completed files are kept.",
+                f"{self.jobs.active_count} job(s) are still running"
+                + (f" ({paused} paused)" if paused else "")
+                + ". Quit and cancel them?\n\n"
+                "Partially copied files will be removed; completed files are kept and can be resumed later.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
