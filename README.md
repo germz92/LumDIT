@@ -55,6 +55,24 @@ LumDIT can read the crew app's card log from MongoDB and walk the DIT card-by-ca
 
 Reopening a production created from an event re-links it to the card log automatically.
 
+### What gets copied from a card
+
+When the source is the top of a camera card, LumDIT copies only the media folders that match
+the category and keeps the card-relative structure under them (so XML sidecars, `MEDIAPRO.XML`
+and thumbnails stay next to the clips for Catalyst / Resolve / Media Composer):
+
+| Category | Folders copied | Notes |
+|---|---|---|
+| Photo, Headshot Booth | `DCIM` | Sony `100MSDCF`, Canon `100CANON`, Nikon, Fuji, Lumix, GoPro, DJI... |
+| Video | `PRIVATE/M4ROOT` (Sony XAVC S/HS), `PRIVATE/XDROOT` (Sony MXF), `PRIVATE/AVCHD`, `MP_ROOT`, `CONTENTS` (Canon XF-AVC), `XFVC` / `CRM` / `XMLTAG` (Canon EOS R) | If the card has none of these but `DCIM` holds clips (Canon EOS R, Nikon, Fuji, Lumix, GoPro), `DCIM` is copied instead. |
+
+Camera housekeeping (`MISC`, `CAMSET`, `AVF_INFO`, `PRIVATE/SONY`, OS metadata) is never copied.
+The confirmation prompt lists what will be copied and what the category rule leaves on the card,
+with an **Offload entire card** button when other media is present. Cards with no recognisable
+layout (Blackmagic, RED `*.RDC`, ARRI, Atomos write clips at the root) and dropped sub-folders are
+copied in full. The manual offload dialog has the same rule as a checkbox, and the
+`OFFLOAD_REPORT.txt` records which roots were copied.
+
 ## Running from source
 
 ```bash

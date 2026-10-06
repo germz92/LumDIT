@@ -15,6 +15,7 @@ from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QFileDialog, QInputDialog, QMessageBox, QWidget
 
 from lumdit.core import devices
+from lumdit.core.cardlayout import CardLayout, MediaRoot, detect_layout, looks_like_card_root
 from lumdit.core.cardlog import CardLogClient, CardLogEntry, CardLogEvent
 from lumdit.core.jobs import Job, JobManager
 from lumdit.core.offload import OffloadRequest, OffloadResult
@@ -242,15 +243,29 @@ class EventBackupController(QObject):
 
     def _prompt_for_source(self, source: Path, headline: str, tgt: tuple[CardLogEntry, int]) -> None:
         entry, slot = tgt
+        category = self._category_for(entry)
+        layout, roots = self.plan_roots(source, category)
         box = QMessageBox(self._parent)
         box.setWindowTitle("Offload card")
         box.setIcon(QMessageBox.Icon.Question)
         box.setText(headline)
-        box.setInformativeText(
-            f"Offload it as:\n\n{entry.describe(slot)}\n\n"
-            f"Destination: {self._destination_for(entry, slot, self._category_for(entry)).relative_to(self.production.root).as_posix()}"
-        )
+        info = [
+            f"Offload it as:\n\n{entry.describe(slot)}\n",
+            f"Destination: {self._destination_for(entry, slot, category).relative_to(self.production.root).as_posix()}",
+        ]
+        left_behind: list = []
+        if roots:
+            info.append("Copying: " + "; ".join(r.summary() for r in roots))
+            left_behind = layout.excluded_media(roots)
+            if left_behind:
+                info.append(
+                    "Also on this card (NOT copied for " + category + "): " + "; ".join(r.summary() for r in left_behind)
+                )
+        elif layout is not None and layout.recognised:
+            info.append("No " + category.lower() + " media found in the usual folders - the whole card will be copied.")
+        box.setInformativeText("\n".join(info))
         offload = box.addButton("Offload", QMessageBox.ButtonRole.AcceptRole)
+        everything = box.addButton("Offload entire card", QMessageBox.ButtonRole.ActionRole) if left_behind else None
         other = box.addButton("Different card...", QMessageBox.ButtonRole.ActionRole)
         manual = box.addButton("Manual offload...", QMessageBox.ButtonRole.ActionRole)
         box.addButton("Ignore", QMessageBox.ButtonRole.RejectRole)
@@ -258,14 +273,31 @@ class EventBackupController(QObject):
         box.exec()
         clicked = box.clickedButton()
         if clicked == offload:
-            self.offload_source(source, entry, slot)
+            self.offload_source(source, entry, slot, include_roots=tuple(r.rel for r in roots))
+        elif everything is not None and clicked == everything:
+            self.offload_source(source, entry, slot, include_roots=())
         elif clicked == other:
             picked = self._pick_entry()
             if picked:
                 self.set_target(picked[0].id, picked[1])
-                self.offload_source(source, *picked)
+                _, roots2 = self.plan_roots(source, self._category_for(picked[0]))
+                self.offload_source(source, *picked, include_roots=tuple(r.rel for r in roots2))
         elif clicked == manual:
             self.manual_offload_requested.emit(source, self.prefill_for(entry, slot))
+
+    @staticmethod
+    def plan_roots(source: Path, category: str) -> tuple[CardLayout | None, list[MediaRoot]]:
+        """Decide which top-level card folders to copy for *category*.
+
+        Returns (layout, roots). An empty *roots* list means copy the whole source - either
+        because the source is not a card root (user dropped a sub-folder) or the layout is
+        not one we recognise (Blackmagic / RED / ARRI write clips at the root).
+        """
+        source = Path(source)
+        if not looks_like_card_root(source):
+            return None, []
+        layout = detect_layout(source)
+        return layout, layout.roots_for(category)
 
     def _pick_entry(self) -> tuple[CardLogEntry, int] | None:
         if not self.log_event:
@@ -310,9 +342,15 @@ class EventBackupController(QObject):
             "note": f"From card log: {entry.describe(slot)}",
         }
 
-    def offload_source(self, source: Path, entry: CardLogEntry, slot: int) -> Job | None:
+    def offload_source(
+        self, source: Path, entry: CardLogEntry, slot: int, include_roots: tuple[str, ...] | None = None
+    ) -> Job | None:
         if not self.active:
             return None
+        if include_roots is None:
+            # Called without a plan (e.g. "Choose folder..."): apply the same category rule.
+            _, roots = self.plan_roots(source, self._category_for(entry))
+            include_roots = tuple(r.rel for r in roots)
         category = self._category_for(entry)
         if category not in self.production.categories:
             self.production.add_category(category)
@@ -344,6 +382,7 @@ class EventBackupController(QObject):
             source_label=vol.label if vol else "",
             log_entry_id=entry.id,
             log_slot=slot,
+            include_roots=tuple(include_roots),
         )
         job = self.jobs.submit_offload(request)
         self._job_links[job.id] = (entry.id, slot)

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QDate, QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDateEdit,
     QDialog,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from lumdit.core import devices
+from lumdit.core.cardlayout import CardLayout, detect_layout, looks_like_card_root
 from lumdit.core.naming import format_card_number, sanitize_name
 from lumdit.core.offload import OffloadRequest, ScanResult, scan_source
 from lumdit.core.production import Production
@@ -34,13 +36,14 @@ class _ScanSignals(QObject):
 
 
 class _ScanTask(QRunnable):
-    def __init__(self, source: Path, label: str, signals: _ScanSignals) -> None:
+    def __init__(self, source: Path, label: str, signals: _ScanSignals, include_roots: tuple[str, ...] = ()) -> None:
         super().__init__()
         self.source, self.label, self.signals = source, label, signals
+        self.include_roots = include_roots
 
     def run(self) -> None:
         try:
-            self.signals.done.emit(scan_source(self.source, self.label))
+            self.signals.done.emit(scan_source(self.source, self.label, self.include_roots))
         except Exception as exc:
             self.signals.error.emit(str(exc))
 
@@ -80,6 +83,18 @@ class OffloadDialog(QDialog):
         self.src_info.setStyleSheet(muted_css(self))
         src_box.addWidget(src_title)
         src_box.addWidget(self.src_info)
+        # Card-root detection: offer to copy only the media folders for the chosen category.
+        self.layout_info: CardLayout | None = detect_layout(self.source) if looks_like_card_root(self.source) else None
+        self.only_media = QCheckBox("Copy only the camera media folders for this category")
+        self.only_media.setChecked(True)
+        self.only_media.setVisible(self.layout_info is not None and self.layout_info.recognised)
+        self.only_media.toggled.connect(self._update_roots_info)
+        self.roots_info = QLabel("")
+        self.roots_info.setWordWrap(True)
+        self.roots_info.setStyleSheet(muted_css(self))
+        self.roots_info.setVisible(self.only_media.isVisible())
+        src_box.addWidget(self.only_media)
+        src_box.addWidget(self.roots_info)
         layout.addLayout(src_box)
 
         form = QFormLayout()
@@ -156,10 +171,7 @@ class OffloadDialog(QDialog):
         if self.prefill:
             self._apply_prefill()
 
-        self._scan_signals = _ScanSignals()
-        self._scan_signals.done.connect(self._scan_done)
-        self._scan_signals.error.connect(self._scan_error)
-        QThreadPool.globalInstance().start(_ScanTask(self.source, self.volume_label, self._scan_signals))
+        self._update_roots_info()  # sets the roots summary and kicks off the first scan
 
     # ---- helpers ------------------------------------------------------------
     def _apply_prefill(self) -> None:
@@ -220,6 +232,49 @@ class OffloadDialog(QDialog):
         if d["operator"] and not self.operator.currentText().strip():
             self.operator.setCurrentText(d["operator"])
         self._names_changed()
+        self._update_roots_info()
+
+    def include_roots(self) -> tuple[str, ...]:
+        """Card-relative folders to copy; empty = whole source."""
+        if self.layout_info is None or not self.only_media.isChecked():
+            return ()
+        return tuple(r.rel for r in self.layout_info.roots_for(self.category.currentText()))
+
+    def _update_roots_info(self, *_args) -> None:
+        if self.layout_info is None or not self.layout_info.recognised:
+            self._rescan()
+            return
+        roots = self.layout_info.roots_for(self.category.currentText())
+        if not self.only_media.isChecked():
+            self.roots_info.setText("Whole card will be copied: " + "; ".join(r.summary() for r in self.layout_info.roots if r.has_media))
+        elif roots:
+            text = "Copying: " + "; ".join(r.summary() for r in roots)
+            left = self.layout_info.excluded_media(roots)
+            if left:
+                text += "\nLeft on card: " + "; ".join(r.summary() for r in left)
+            self.roots_info.setText(text)
+        else:
+            self.roots_info.setText(
+                f"No {self.category.currentText()} media in the usual folders - the whole card will be copied."
+            )
+        self._rescan()
+
+    def _rescan(self) -> None:
+        self.scan = None
+        self.ok_btn.setEnabled(False)
+        self.src_info.setText("Scanning source...")
+        old = getattr(self, "_scan_signals", None)
+        if old is not None:
+            # A previous scan may still be running; make sure its stale result is ignored.
+            try:
+                old.done.disconnect(self._scan_done)
+                old.error.disconnect(self._scan_error)
+            except (RuntimeError, TypeError):
+                pass
+        self._scan_signals = _ScanSignals()
+        self._scan_signals.done.connect(self._scan_done)
+        self._scan_signals.error.connect(self._scan_error)
+        QThreadPool.globalInstance().start(_ScanTask(self.source, self.volume_label, self._scan_signals, self.include_roots()))
 
     def _names_changed(self, *_args) -> None:
         camera, operator = self.camera.currentText(), self.operator.currentText()
@@ -335,5 +390,6 @@ class OffloadDialog(QDialog):
             source_label=self.volume_label,
             log_entry_id=self.log_entry_id,
             log_slot=self.log_slot,
+            include_roots=self.include_roots(),
         )
         self.accept()

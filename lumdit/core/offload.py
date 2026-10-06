@@ -37,6 +37,7 @@ from lumdit.core.hashing import (
     xxh64_file,
 )
 from lumdit.core.mhl import HashEntry, iso_from_timestamp, write_mhl, write_xxh64_sidecar
+from lumdit.core.cardlayout import _find_case_insensitive
 from lumdit.core.naming import format_card_number
 
 JUNK_NAMES = {
@@ -79,6 +80,9 @@ class OffloadRequest:
     # Link to the crew app's card log entry (empty for manual offloads).
     log_entry_id: str = ""
     log_slot: int = 0
+    # Card-relative top-level folders to copy (e.g. ("DCIM",) or ("PRIVATE/M4ROOT",)).
+    # Empty = copy the whole source. Structure under each root is preserved.
+    include_roots: tuple[str, ...] = ()
 
     @property
     def card_label(self) -> str:
@@ -172,30 +176,43 @@ def is_junk(name: str) -> bool:
     return name in JUNK_NAMES or name.startswith(JUNK_PREFIXES)
 
 
-def scan_source(source: Path, volume_label: str = "") -> ScanResult:
-    """Walk *source* collecting media files (junk filtered) and a cheap fingerprint."""
+def scan_source(source: Path, volume_label: str = "", include_roots: tuple[str, ...] | list[str] = ()) -> ScanResult:
+    """Walk *source* collecting media files (junk filtered) and a cheap fingerprint.
+
+    When *include_roots* is given only those card-relative folders are walked; paths in
+    the result stay relative to *source* so the card structure is preserved.
+    """
     files: list[FileEntry] = []
     skipped = 0
     total = 0
     source = Path(source)
-    for dirpath, dirnames, filenames in os.walk(source):
-        # Prune junk directories in place so we never descend into them.
-        keep = [d for d in dirnames if not is_junk(d)]
-        skipped += len(dirnames) - len(keep)
-        dirnames[:] = sorted(keep)
-        for name in sorted(filenames):
-            if is_junk(name) or name.endswith(".part"):
-                skipped += 1
-                continue
-            full = Path(dirpath) / name
-            try:
-                st = full.stat()
-            except OSError:
-                skipped += 1
-                continue
-            rel = full.relative_to(source).as_posix()
-            files.append(FileEntry(source=full, relative=rel, size=st.st_size, mtime=st.st_mtime))
-            total += st.st_size
+    if include_roots:
+        # Resolve against the on-disk casing so relative paths match the card exactly.
+        starts = [p for p in (_find_case_insensitive(source, r) for r in include_roots) if p is not None]
+    else:
+        starts = [source]
+    for start in starts:
+        if not start.is_dir():
+            continue
+        for dirpath, dirnames, filenames in os.walk(start):
+            # Prune junk directories in place so we never descend into them.
+            keep = [d for d in dirnames if not is_junk(d)]
+            skipped += len(dirnames) - len(keep)
+            dirnames[:] = sorted(keep)
+            for name in sorted(filenames):
+                if is_junk(name) or name.endswith(".part"):
+                    skipped += 1
+                    continue
+                full = Path(dirpath) / name
+                try:
+                    st = full.stat()
+                except OSError:
+                    skipped += 1
+                    continue
+                rel = full.relative_to(source).as_posix()
+                files.append(FileEntry(source=full, relative=rel, size=st.st_size, mtime=st.st_mtime))
+                total += st.st_size
+    files.sort(key=lambda f: f.relative)
     fp_src = "\n".join(f"{f.relative}|{f.size}" for f in files)
     fingerprint = xxh64_bytes(f"{volume_label}\n{fp_src}".encode("utf-8"))
     return ScanResult(files=files, total_bytes=total, skipped_junk=skipped, fingerprint=fingerprint)
@@ -302,7 +319,7 @@ class OffloadEngine:
         mhl_path = sidecar_path = report_path = None
 
         try:
-            scan = scan_source(req.source, req.source_label)
+            scan = scan_source(req.source, req.source_label, req.include_roots)
             fingerprint = scan.fingerprint
             self.preflight(scan)
             self.progress.bytes_total = scan.total_bytes * 2  # copy pass + read-back pass
@@ -476,6 +493,7 @@ def write_report(result: OffloadResult, scan: ScanResult) -> Path:
         f"Card number:   {req.card_label}",
         f"Source:        {req.source}",
         f"Source volume: {req.source_label}",
+        f"Copied roots:  {', '.join(req.include_roots) if req.include_roots else 'entire source'}",
         f"Destination:   {req.destination}",
         f"Started:       {result.started.astimezone().isoformat(timespec='seconds')}",
         f"Finished:      {result.finished.astimezone().isoformat(timespec='seconds')}",
