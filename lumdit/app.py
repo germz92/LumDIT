@@ -22,9 +22,27 @@ def app_icon() -> QIcon:
     return QIcon.fromTheme("camera-photo")
 
 
+def _set_windows_app_id() -> None:
+    """Give the process its own taskbar identity on Windows.
+
+    Without this, Windows groups the window under the host executable's AppUserModelID
+    (python.exe when running from source) and shows *that* exe's icon in the taskbar
+    instead of the window icon. Must run before any window is created.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(f"{ORG_NAME}.{APP_NAME}")  # type: ignore[attr-defined]
+    except Exception:  # pragma: no cover - cosmetic only
+        logging.getLogger(__name__).debug("Could not set AppUserModelID", exc_info=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv if argv is None else argv)
     setup_logging()
+    _set_windows_app_id()
     QApplication.setOrganizationName(ORG_NAME)
     QApplication.setApplicationName(APP_NAME)
     QApplication.setApplicationVersion(__version__)
