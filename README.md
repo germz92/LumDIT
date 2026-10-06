@@ -109,7 +109,7 @@ pyinstaller packaging/lumdit-macos.spec     # -> dist/LumDIT.app  (run on a Mac)
 Windows installer (needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)):
 
 ```bash
-iscc /DAppVersion=0.1.0 packaging\lumdit.iss      # -> dist/LumDIT-0.1.0-Setup.exe
+iscc /DAppVersion=0.2.0 packaging\lumdit.iss      # -> dist/LumDIT-0.2.0-Setup.exe
 ```
 
 Drop a `lumdit.ico` / `lumdit.icns` into `packaging/` to get a custom app icon.
