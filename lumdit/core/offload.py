@@ -443,7 +443,13 @@ class OffloadEngine:
                     # Roll progress back so the retry doesn't over-count.
                     self.progress.bytes_done = base_done
                     continue
-                os.utime(part, (time.time(), entry.mtime))
+                if entry.mtime > 0:
+                    # Preserve the camera's timestamp. Skip garbage values (zero FILETIME ->
+                    # 1601-01-01) which Windows either rejects or silently ignores.
+                    try:
+                        os.utime(part, (time.time(), entry.mtime))
+                    except OSError:
+                        pass
                 os.replace(part, dest)
                 try:
                     shutil.copystat(entry.source, dest, follow_symlinks=False)

@@ -92,6 +92,61 @@ def test_offload_copies_verifies_and_writes_manifests(tmp_path):
     assert verify.passed and verify.ok == 4
 
 
+def _set_zero_filetime(path: Path) -> bool:
+    """Give *path* the bogus 1601-01-01 timestamp Sony writes on SONYCARD.IND. Returns False if unsupported."""
+    if os.name == "nt":
+        import ctypes
+
+        k = ctypes.windll.kernel32
+        h = k.CreateFileW(str(path), 0x40000000, 0, None, 3, 0x80, None)
+        if h == -1:
+            return False
+
+        class FT(ctypes.Structure):
+            _fields_ = [("lo", ctypes.c_uint32), ("hi", ctypes.c_uint32)]
+
+        ok = k.SetFileTime(h, None, None, ctypes.byref(FT(1, 0)))
+        k.CloseHandle(h)
+        return bool(ok)
+    try:
+        os.utime(path, (0, -11644473600))
+        return True
+    except OSError:
+        return False
+
+
+def test_offload_survives_garbage_source_timestamps(tmp_path):
+    """Regression: SONYCARD.IND with a zero FILETIME killed the whole job with [Errno 22]."""
+    card = make_card(tmp_path)
+    ind = card / "PRIVATE" / "SONY" / "SONYCARD.IND"
+    ind.parent.mkdir(parents=True)
+    ind.write_bytes(b"\x00" * 64)
+    if not _set_zero_filetime(ind):
+        pytest.skip("cannot create a pre-1970 timestamp on this filesystem")
+    assert ind.stat().st_mtime < 0
+
+    dest = tmp_path / "out" / "A7IV - Jen (#32)"
+    req = OffloadRequest(source=card, destination=dest, camera="A7IV", operator="Jen", card_number=32, chunk_size=64 * 1024)
+    result = OffloadEngine(req).run()
+
+    assert result.status == "verified", result.message
+    assert result.copied == 5
+    assert result.mhl_path and result.mhl_path.is_file()
+    assert (dest / REPORT_NAME).is_file()
+    bad = next(e for e in read_mhl(result.mhl_path) if e.relative_path.endswith("SONYCARD.IND"))
+    assert bad.last_modified == "1601-01-01T00:00:00Z"
+    assert verify_manifest(result.mhl_path).passed
+
+
+def test_iso_from_timestamp_edge_cases():
+    from lumdit.core.mhl import iso_from_timestamp
+
+    assert iso_from_timestamp(0) == "1970-01-01T00:00:00Z"
+    assert iso_from_timestamp(-11644473600) == "1601-01-01T00:00:00Z"
+    assert iso_from_timestamp(315532800) == "1980-01-01T00:00:00Z"
+    assert iso_from_timestamp(1e18) == "1970-01-01T00:00:00Z"  # out of range -> clamped, never raises
+
+
 def test_offload_resume_skips_identical_and_flags_conflicts(tmp_path):
     card = make_card(tmp_path)
     dest = tmp_path / "dest"

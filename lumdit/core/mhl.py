@@ -11,7 +11,7 @@ import getpass
 import os
 import socket
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 from xml.etree import ElementTree as ET
@@ -59,8 +59,21 @@ def _iso(dt: datetime | None = None) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
 def iso_from_timestamp(ts: float) -> str:
-    return _iso(datetime.fromtimestamp(ts, tz=timezone.utc))
+    """ISO-8601 UTC for a POSIX timestamp, tolerant of garbage camera timestamps.
+
+    Cards regularly carry files with a zero Windows FILETIME (``st_mtime`` = -11644473600,
+    i.e. 1601-01-01) - Sony's ``PRIVATE/SONY/SONYCARD.IND`` is one. ``datetime.fromtimestamp``
+    raises ``OSError [Errno 22]`` for those on Windows, so convert arithmetically instead and
+    clamp anything outside the datetime range.
+    """
+    try:
+        return _iso(_EPOCH + timedelta(seconds=ts))
+    except (OverflowError, ValueError, TypeError):
+        return _iso(_EPOCH)
 
 
 def write_mhl(
