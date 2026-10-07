@@ -8,7 +8,7 @@
 
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_dynamic_libs, collect_submodules
 
 ROOT = Path(SPECPATH).parent
 
@@ -27,15 +27,18 @@ hiddenimports = (
     + collect_submodules("pymongo")
     + collect_submodules("bson")
     + collect_submodules("dns")
-    + ["xxhash", "psutil", "pillow_heif", "rawpy", "av", "dotenv"]
+    + ["xxhash", "psutil", "pillow_heif", "rawpy", "av", "dotenv", "certifi"]
 )
 binaries = collect_dynamic_libs("av") + collect_dynamic_libs("rawpy") + collect_dynamic_libs("pillow_heif")
+# certifi's cacert.pem: the frozen app's OpenSSL has no system trust store, so pymongo
+# is pointed at this bundle for Atlas TLS (see lumdit.core.cardlog.ca_bundle_path).
+datas = [(str(ROOT / "lumdit" / "resources"), "lumdit/resources")] + collect_data_files("certifi")
 
 a = Analysis(
     [str(ROOT / "lumdit" / "__main__.py")],
     pathex=[str(ROOT)],
     binaries=binaries,
-    datas=[(str(ROOT / "lumdit" / "resources"), "lumdit/resources")],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     runtime_hooks=[],

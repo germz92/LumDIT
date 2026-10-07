@@ -19,6 +19,7 @@ unit-tested without a database.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -293,6 +294,21 @@ class CardLogError(Exception):
     pass
 
 
+def ca_bundle_path() -> str | None:
+    """CA bundle for TLS to Atlas.
+
+    The frozen macOS app's OpenSSL has no usable system trust store, so Atlas connections
+    fail with CERTIFICATE_VERIFY_FAILED unless we hand pymongo a CA file. certifi ships
+    Mozilla's bundle and is collected into the build.
+    """
+    try:
+        import certifi
+    except ImportError:  # pragma: no cover - dependency, but degrade gracefully
+        return None
+    path = certifi.where()
+    return path if os.path.isfile(path) else None
+
+
 class CardLogClient:
     """Thin pymongo wrapper. All methods block; call them from a worker thread."""
 
@@ -312,13 +328,16 @@ class CardLogClient:
                 from pymongo import MongoClient
             except ImportError as exc:  # pragma: no cover
                 raise CardLogError("pymongo is not installed") from exc
-            self._client = MongoClient(
-                self.uri,
+            kwargs: dict = dict(
                 serverSelectionTimeoutMS=self.timeout_ms,
                 connectTimeoutMS=self.timeout_ms,
                 socketTimeoutMS=self.timeout_ms * 4,
                 appname="LumDIT",
             )
+            ca = ca_bundle_path()
+            if ca and "tlsCAFile" not in self.uri and "tlsInsecure" not in self.uri:
+                kwargs["tlsCAFile"] = ca
+            self._client = MongoClient(self.uri, **kwargs)
         return self._client[self.db_name][self.collection_name]
 
     def test(self) -> str:
