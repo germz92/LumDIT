@@ -29,6 +29,13 @@ offloaded. The card folder name template (`{camera} - {operator} ({card})` by de
 changed in Settings. `{card}` renders as `#12` for numbered cards or as the label itself (e.g.
 `Internal`) when the card log uses free text.
 
+An open production can be changed later with **File > Edit Production...** (or the **Edit...**
+button above the folder tree): rename the client or production (the folder is moved on disk and
+offload records follow), change the shoot dates, and add or remove top-level folders. Removing a
+folder or narrowing the dates only deletes folders that contain no files; anything with media in
+it stays on disk and is reported. Productions created from a card-log event stay linked after a
+rename.
+
 ## Event Backup (card log)
 
 LumDIT can read the crew app's card log from MongoDB and walk the DIT card-by-card.

@@ -129,7 +129,7 @@ class _VerifyRunnable(QRunnable):
         manifest: Path = job.payload
         prog = OffloadProgress(phase="verifying")
         try:
-            prog.bytes_total = manifest_total_bytes(manifest)
+            prog.bytes_total = prog.data_bytes = manifest_total_bytes(manifest)
             self.signals.progress.emit(job.id, _snapshot(prog))
 
             def on_progress(n: int, rel: str) -> None:

@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
 
 from lumdit.core.jobs import Job, JobManager
 from lumdit.settings import Settings
-from lumdit.ui.util import human_eta, human_rate, muted_css
+from lumdit.ui.util import human_eta, human_rate, human_size, muted_css
 
 _STATE_TEXT = {
     "queued": "Queued",
@@ -88,15 +88,18 @@ class JobRow(QFrame):
         p = job.progress
         paused = job.paused
         self.bar.setValue(int(p.fraction * 1000))
+        size = human_size(p.data_bytes) if p.data_bytes else ""
+        files = f"{p.files_done}/{p.files_total} files" if p.files_total else ""
+        head = "  |  ".join(x for x in (files, size) if x)
         if job.state == "running":
             self.state.setText("Paused" if paused else p.phase.capitalize())
             if paused:
                 self.detail.setText(
-                    f"{p.files_done}/{p.files_total} files  |  paused" + (f"\n{p.current_file}" if p.current_file else "")
+                    "  |  ".join(x for x in (head, "paused") if x) + (f"\n{p.current_file}" if p.current_file else "")
                 )
             else:
                 self.detail.setText(
-                    f"{p.files_done}/{p.files_total} files  |  {human_rate(p.speed_bps)}  |  ETA {human_eta(p.eta_seconds)}"
+                    "  |  ".join(x for x in (head, human_rate(p.speed_bps), f"ETA {human_eta(p.eta_seconds)}") if x)
                     + (f"\n{p.current_file}" if p.current_file else "")
                 )
         elif job.state == "queued":
@@ -104,7 +107,7 @@ class JobRow(QFrame):
             self.detail.setText(job.message)
         else:
             self.state.setText(_STATE_TEXT.get(job.state, job.state))
-            self.detail.setText(job.message)
+            self.detail.setText("  |  ".join(x for x in (head, job.message) if x))
             if job.state == "done":
                 self.bar.setValue(1000)
         finished = job.state in ("done", "failed", "cancelled")

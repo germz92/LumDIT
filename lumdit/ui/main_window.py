@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self.production_view.folder_activated.connect(self._browser_navigate)
         self.production_view.verify_requested.connect(self.verify_folder)
         self.production_view.add_category_requested.connect(self.add_category)
+        self.production_view.edit_requested.connect(self.edit_production)
         self.drop_zone.folders_dropped.connect(self._folders_dropped)
         self.cardlog_panel.start_event_requested.connect(self.event_backup_start)
         self.cardlog_panel.folders_dropped.connect(self._folders_dropped)
@@ -150,6 +151,9 @@ class MainWindow(QMainWindow):
         self.act_event.setShortcut("Ctrl+E")
         self.act_event.setToolTip("Pick an event from the crew app's card log and be walked through each card")
         self.act_event.triggered.connect(self.event_backup_start)
+        self.act_edit = QAction("Edit Production...", self)
+        self.act_edit.setToolTip("Rename, change the shoot dates or add/remove folders")
+        self.act_edit.triggered.connect(self.edit_production)
         self.act_close = QAction("Close Production", self)
         self.act_close.triggered.connect(self.close_production)
         self.act_offload = QAction("Offload Folder...", self)
@@ -204,6 +208,7 @@ class MainWindow(QMainWindow):
         self.recent_menu = QMenu("Open Recent", self)
         file_menu.addMenu(self.recent_menu)
         self.recent_menu.aboutToShow.connect(self._fill_recent)
+        file_menu.addAction(self.act_edit)
         file_menu.addAction(self.act_close)
         file_menu.addSeparator()
         file_menu.addAction(self.act_quit)
@@ -278,7 +283,7 @@ class MainWindow(QMainWindow):
 
     def _show_browser(self, on: bool) -> None:
         self.stack.setCurrentIndex(1 if on else 0)
-        for a in (self.act_close, self.act_offload, self.act_refresh):
+        for a in (self.act_close, self.act_edit, self.act_offload, self.act_refresh):
             a.setEnabled(on)
         if not on:
             self.drop_zone.set_enabled_state(False, "Create or open a production first")
@@ -291,6 +296,32 @@ class MainWindow(QMainWindow):
             self.production.add_category(name)
             self.production_view.set_production(self.production)
             self.cardlog_panel.set_production_categories(self.production.categories)
+
+    def edit_production(self) -> None:
+        if not self.production:
+            return
+        if self.jobs.active_count:
+            QMessageBox.information(self, "Jobs running", "Wait for running jobs to finish before editing the production.")
+            return
+        old_root = self.production.root
+        dlg = NewProductionDialog(self.settings, self, production=self.production)
+        if dlg.exec() != NewProductionDialog.DialogCode.Accepted:
+            return
+        prod = self.production
+        log.info("Production edited (%s): %s", old_root, "; ".join(dlg.changes) or "no changes")
+        if prod.root != old_root:
+            self.settings.add_recent_production(prod.root)
+            self.welcome.set_recent(self.settings.recent_productions)
+        self.production_view.set_production(prod)
+        self.cardlog_panel.set_production_categories(prod.categories)
+        self.setWindowTitle(f"{prod.display_name} - {APP_NAME}")
+        if dlg.changes:
+            self.statusBar().showMessage("Production updated: " + "; ".join(dlg.changes), 12000)
+            kept = [c for c in dlg.changes if "kept on disk" in c]
+            if kept:
+                QMessageBox.information(self, "Some folders were kept", "\n\n".join(kept))
+        else:
+            self.statusBar().showMessage("No changes to the production", 4000)
 
     # ---- event backup (card log) ------------------------------------------------------
     def event_backup_start(self) -> None:

@@ -40,6 +40,65 @@ def test_create_production_structure_under_client(tmp_path):
     )
 
 
+def test_update_rename_moves_folder_and_rebases_records(tmp_path):
+    prod = create_production(tmp_path, "Acme", "Launch", date(2026, 10, 5), date(2026, 10, 6), ["Photo"])
+    dest = prod.card_dir("Photo", date(2026, 10, 5), "A7IV", "Gerry", 1)
+    dest.mkdir(parents=True)
+    (dest / "DSC00001.ARW").write_bytes(b"x")
+    rec = _record(camera="A7IV", category="Photo")
+    rec.destination = str(dest)
+    prod.record_offload(rec)
+
+    changes = prod.update("Acme Corp", "Product Launch", date(2026, 10, 5), date(2026, 10, 6), ["Photo"])
+    new_root = tmp_path / "Acme Corp" / "Product Launch"
+    assert prod.root == new_root and prod.client == "Acme Corp" and prod.name == "Product Launch"
+    assert new_root.is_dir() and not (tmp_path / "Acme").exists()  # emptied old client folder tidied
+    assert (new_root / "Photo" / "10.05.2026" / dest.name / "DSC00001.ARW").is_file()
+    assert prod.offloads[0].destination == str(new_root / "Photo" / "10.05.2026" / dest.name)
+    assert any(c.startswith("Moved to") for c in changes)
+    # Reloading from disk gives the same thing.
+    again = Production.load(new_root)
+    assert again.name == "Product Launch" and again.offloads[0].destination == prod.offloads[0].destination
+    # Refuses to clobber an existing folder.
+    create_production(tmp_path, "Acme Corp", "Other", date(2026, 1, 1), date(2026, 1, 1), ["Photo"])
+    with pytest.raises(ProductionError):
+        prod.update("Acme Corp", "Other", date(2026, 10, 5), date(2026, 10, 6), ["Photo"])
+
+
+def test_update_folders_and_dates_only_delete_empty_things(tmp_path):
+    prod = create_production(tmp_path, "Acme", "Launch", date(2026, 10, 5), date(2026, 10, 7), ["Photo", "Video"])
+    # Video has a real file; Photo's 10.07 folder is empty but 10.06 has a file.
+    (prod.root / "Video" / "10.05.2026" / "clip.mp4").write_bytes(b"x")
+    (prod.root / "Photo" / "10.06.2026" / "img.jpg").write_bytes(b"x")
+
+    changes = prod.update("Acme", "Launch", date(2026, 10, 5), date(2026, 10, 5), ["Photo", "BTS"])
+    assert prod.categories == ["Photo", "BTS"]
+    assert (prod.root / "BTS" / "10.05.2026").is_dir()
+    # Video kept (has files) but no longer tracked; Photo/10.07 (empty) deleted; Photo/10.06 kept (has file).
+    assert (prod.root / "Video" / "10.05.2026" / "clip.mp4").is_file()
+    assert not (prod.root / "Photo" / "10.07.2026").exists()
+    assert (prod.root / "Photo" / "10.06.2026" / "img.jpg").is_file()
+    assert any("Video" in c and "kept on disk" in c for c in changes)
+    assert any("Photo/10.06.2026" in c for c in changes)
+    assert prod.start_date == prod.end_date == date(2026, 10, 5)
+
+    # Removing an empty folder deletes it outright.
+    changes = prod.update("Acme", "Launch", date(2026, 10, 5), date(2026, 10, 5), ["Photo"])
+    assert not (prod.root / "BTS").exists() and "Deleted empty folder 'BTS'" in changes
+    with pytest.raises(ProductionError):
+        prod.update("Acme", "Launch", date(2026, 10, 5), date(2026, 10, 5), [])
+
+
+def test_find_or_create_for_event_follows_a_renamed_production(tmp_path):
+    from lumdit.core.production import find_or_create_for_event
+
+    prod = find_or_create_for_event(tmp_path, "ev1", "Launch", "Acme", "Launch", date(2026, 1, 1), date(2026, 1, 1), ["Photo"])
+    prod.update("Acme", "Launch Renamed", date(2026, 1, 1), date(2026, 1, 1), ["Photo"])
+    again = find_or_create_for_event(tmp_path, "ev1", "Launch", "Acme", "Launch", date(2026, 1, 1), date(2026, 1, 1), ["Photo"])
+    assert again.root == tmp_path / "Acme" / "Launch Renamed"
+    assert not (tmp_path / "Acme" / "Launch").exists()
+
+
 def test_two_productions_share_a_client_folder(tmp_path):
     a = create_production(tmp_path, "Acme", "Spring", date(2026, 1, 1), date(2026, 1, 1), ["Photo"])
     b = create_production(tmp_path, "Acme", "Fall", date(2026, 9, 1), date(2026, 9, 1), ["Photo"])

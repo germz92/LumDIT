@@ -1,4 +1,4 @@
-"""Create Production dialog."""
+"""Create / Edit Production dialog."""
 
 from __future__ import annotations
 
@@ -44,11 +44,15 @@ def _pydate(q: QDate) -> date:
 
 
 class NewProductionDialog(QDialog):
-    def __init__(self, settings: Settings, parent: QWidget | None = None) -> None:
+    """Create a production, or edit an existing one when *production* is given."""
+
+    def __init__(self, settings: Settings, parent: QWidget | None = None, production: Production | None = None) -> None:
         super().__init__(parent)
         self.settings = settings
+        self.editing = production
         self.production: Production | None = None
-        self.setWindowTitle("Create Production")
+        self.changes: list[str] = []
+        self.setWindowTitle("Edit Production" if production else "Create Production")
         self.setMinimumWidth(520)
 
         layout = QVBoxLayout(self)
@@ -90,9 +94,16 @@ class NewProductionDialog(QDialog):
         folders_box = QVBoxLayout()
         self.folders = QListWidget()
         self.folders.setMaximumHeight(120)
-        for preset in PRESET_CATEGORIES:
-            # Only Photo is on by default; tick Video / Headshot Booth per production.
-            self._add_folder_item(preset, checked=(preset == PRESET_CATEGORIES[0]))
+        if production:
+            for cat in production.categories:
+                self._add_folder_item(cat, checked=True)
+            for preset in PRESET_CATEGORIES:
+                if preset not in production.categories:
+                    self._add_folder_item(preset, checked=False)
+        else:
+            for preset in PRESET_CATEGORIES:
+                # Only Photo is on by default; tick Video / Headshot Booth per production.
+                self._add_folder_item(preset, checked=(preset == PRESET_CATEGORIES[0]))
         self.folders.itemChanged.connect(self._update_preview)
         folders_box.addWidget(self.folders)
         custom = QHBoxLayout()
@@ -113,7 +124,15 @@ class NewProductionDialog(QDialog):
         browse.clicked.connect(self._browse)
         root_row.addWidget(self.root, 1)
         root_row.addWidget(browse)
-        form.addRow("Create in", root_row)
+        if production:
+            # Location is fixed when editing; renaming moves the folder within it.
+            base = production.root.parent.parent if production.client else production.root.parent
+            self.root.setText(str(base))
+            self.root.setReadOnly(True)
+            browse.hide()
+            form.addRow("Location", root_row)
+        else:
+            form.addRow("Create in", root_row)
         layout.addLayout(form)
 
         self.preview = QLabel("")
@@ -122,11 +141,31 @@ class NewProductionDialog(QDialog):
         self.preview.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.preview)
 
+        if production:
+            note = QLabel(
+                "Renaming moves the production folder on disk. Unticked folders and dates outside the new range "
+                "are only deleted when they contain no files."
+                + (
+                    "\nThis production is linked to a card-log event; Event Backup keeps working after a rename."
+                    if production.event_id
+                    else ""
+                )
+            )
+            note.setWordWrap(True)
+            note.setStyleSheet(muted_css(self))
+            layout.addWidget(note)
+
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
-        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Create Production")
-        buttons.accepted.connect(self._create)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Save Changes" if production else "Create Production")
+        buttons.accepted.connect(self._save if production else self._create)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+        if production:
+            self.client.setCurrentText(production.client)
+            self.name.setText(production.name)
+            self.start.setDate(_qdate(production.start_date))
+            self.end.setDate(_qdate(production.end_date))
         self._update_preview()
 
     # ---- helpers ------------------------------------------------------------
@@ -166,6 +205,8 @@ class NewProductionDialog(QDialog):
         ]
 
     def _update_preview(self, *_args) -> None:
+        if not hasattr(self, "preview"):
+            return  # signals fire while the form is still being built
         start, end = _pydate(self.start.date()), _pydate(self.end.date())
         days = (end - start).days + 1 if end >= start else 0
         self.days_label.setText(f"{days} day{'s' if days != 1 else ''}")
@@ -198,5 +239,35 @@ class NewProductionDialog(QDialog):
             QMessageBox.critical(self, "Cannot create production", str(exc))
             return
         self.settings.default_destination_root = self.root.text().strip()
+        self.settings.add_history("client", self.client.currentText())
+        self.accept()
+
+    def _save(self) -> None:
+        prod = self.editing
+        assert prod is not None
+        dropped = [c for c in prod.categories if c not in self.selected_categories()]
+        if dropped:
+            res = QMessageBox.question(
+                self,
+                "Remove folders?",
+                "Remove these folders from the production?\n\n  " + "\n  ".join(dropped)
+                + "\n\nFolders that contain files are kept on disk; only empty ones are deleted.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if res != QMessageBox.StandardButton.Yes:
+                return
+        try:
+            self.changes = prod.update(
+                self.client.currentText(),
+                self.name.text(),
+                _pydate(self.start.date()),
+                _pydate(self.end.date()),
+                self.selected_categories(),
+            )
+        except (ProductionError, OSError) as exc:
+            QMessageBox.critical(self, "Cannot save changes", str(exc))
+            return
+        self.production = prod
         self.settings.add_history("client", self.client.currentText())
         self.accept()

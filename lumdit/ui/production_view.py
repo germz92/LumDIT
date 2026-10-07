@@ -79,6 +79,7 @@ class ProductionView(QWidget):
     folder_activated = Signal(object)  # Path (show in browser)
     verify_requested = Signal(object)  # Path (folder to verify)
     add_category_requested = Signal()
+    edit_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -99,7 +100,10 @@ class ProductionView(QWidget):
         self.add_cat_btn = QPushButton("Add Folder")
         self.add_cat_btn.setToolTip("Add another top-level folder (e.g. BTS, Audio) to this production")
         self.add_cat_btn.clicked.connect(self.add_category_requested)
-        for b in (self.open_btn, self.verify_btn, self.add_cat_btn):
+        self.edit_btn = QPushButton("Edit...")
+        self.edit_btn.setToolTip("Rename the production, change the shoot dates or add/remove folders")
+        self.edit_btn.clicked.connect(self.edit_requested)
+        for b in (self.open_btn, self.verify_btn, self.add_cat_btn, self.edit_btn):
             header.addWidget(b)
         layout.addLayout(header)
 
@@ -124,7 +128,7 @@ class ProductionView(QWidget):
     def set_production(self, production: Production | None) -> None:
         self.production = production
         enabled = production is not None
-        for b in (self.open_btn, self.verify_btn, self.add_cat_btn):
+        for b in (self.open_btn, self.verify_btn, self.add_cat_btn, self.edit_btn):
             b.setEnabled(enabled)
         if production is None:
             self.title.setText("<b>No production open</b>")

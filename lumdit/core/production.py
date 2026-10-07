@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -142,6 +143,107 @@ class Production:
             self.categories.append(category)
         self.ensure_structure()
         self.save()
+
+    # ---- editing -------------------------------------------------------------------
+    def update(
+        self,
+        client: str,
+        name: str,
+        start_date: date,
+        end_date: date,
+        categories: Iterable[str],
+    ) -> list[str]:
+        """Apply edits to an existing production and return a human-readable change list.
+
+        * Renaming the client or production moves the folder on disk (``<root>/<client>/<name>``)
+          and rewrites recorded offload paths. Refused if the target already exists.
+        * New folders / wider dates: created.
+        * Removed folders / narrower dates: the folder is deleted only when it holds no files
+          at all; otherwise it is left on disk untouched and reported.
+        """
+        if not client.strip():
+            raise ProductionError("Client name is required")
+        if not name.strip():
+            raise ProductionError("Production name is required")
+        if end_date < start_date:
+            raise ProductionError("End date must be on or after the start date")
+        clean_client, clean_name = sanitize_name(client), sanitize_name(name)
+        cats: list[str] = []
+        for c in categories:
+            c = sanitize_name(c)
+            if c and c not in cats:
+                cats.append(c)
+        if not cats:
+            raise ProductionError("Keep at least one folder (Photo, Video, ...)")
+
+        changes: list[str] = []
+        old_root = self.root
+        old_start, old_end = self.start_date, self.end_date
+        old_cats = list(self.categories)
+
+        # 1. Rename / move first so everything below works on the new paths.
+        if clean_client != self.client or clean_name != self.name:
+            base = old_root.parent.parent if self.client else old_root.parent
+            new_root = base / clean_client / clean_name
+            if new_root != old_root:
+                if new_root.exists():
+                    raise ProductionError(f"A folder already exists at {new_root}")
+                new_root.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    old_root.rename(new_root)
+                except OSError as exc:
+                    raise ProductionError(f"Could not move the production folder: {exc}") from exc
+                self.root = new_root
+                for rec in self.offloads:
+                    rec.destination = _rebase(rec.destination, old_root, new_root)
+                changes.append(f"Moved to {new_root}")
+                # Tidy an emptied old client folder.
+                try:
+                    if self.client and old_root.parent != new_root.parent and not any(old_root.parent.iterdir()):
+                        old_root.parent.rmdir()
+                except OSError:
+                    pass
+            self.client, self.name = clean_client, clean_name
+
+        # 2. Folders.
+        removed = [c for c in old_cats if c not in cats]
+        added = [c for c in cats if c not in old_cats]
+        self.categories = cats
+        for c in removed:
+            folder = self.category_dir(c)
+            if not folder.exists():
+                continue
+            if _has_files(folder):
+                changes.append(f"Folder '{c}' removed from the production but kept on disk (it contains files)")
+            else:
+                shutil.rmtree(folder, ignore_errors=True)
+                changes.append(f"Deleted empty folder '{c}'")
+        if added:
+            changes.append("Added folder(s): " + ", ".join(added))
+
+        # 3. Dates.
+        self.start_date, self.end_date = start_date, end_date
+        if (start_date, end_date) != (old_start, old_end):
+            changes.append(f"Dates: {start_date:%m.%d.%Y} - {end_date:%m.%d.%Y}")
+            wanted = {format_date_folder(d) for d in self.date_range()}
+            kept: list[str] = []
+            for c in cats:
+                cat_dir = self.category_dir(c)
+                if not cat_dir.is_dir():
+                    continue
+                for p in cat_dir.iterdir():
+                    if not p.is_dir() or parse_date_folder(p.name) is None or p.name in wanted:
+                        continue
+                    if _has_files(p):
+                        kept.append(f"{c}/{p.name}")
+                    else:
+                        shutil.rmtree(p, ignore_errors=True)
+            if kept:
+                changes.append("Date folders outside the new range kept on disk (contain files): " + ", ".join(kept))
+
+        self.ensure_structure()
+        self.save()
+        return changes
 
     # ---- card bookkeeping -----------------------------------------------------------
     def defaults_for(self, category: str) -> dict[str, Any]:
@@ -350,6 +452,11 @@ def find_or_create_for_event(
     if not cats:
         cats = [PRESET_CATEGORIES[0]]
     root = Path(destination_root) / sanitize_name(client) / sanitize_name(name)
+    if not (root / PRODUCTION_FILE).is_file():
+        # The production may have been renamed/moved after it was created: find it by event id.
+        linked = find_production_for_event(destination_root, event_id)
+        if linked is not None:
+            root = linked
     if (root / PRODUCTION_FILE).is_file():
         prod = Production.load(root)
         changed = False
@@ -373,6 +480,48 @@ def find_or_create_for_event(
     return prod
 
 
+def find_production_for_event(destination_root: Path | str, event_id: str) -> Path | None:
+    """Root of the production under ``<destination_root>/<client>/<name>`` linked to *event_id*."""
+    if not event_id:
+        return None
+    base = Path(destination_root)
+    if not base.is_dir():
+        return None
+    try:
+        for client_dir in base.iterdir():
+            if not client_dir.is_dir():
+                continue
+            for prod_dir in client_dir.iterdir():
+                pj = prod_dir / PRODUCTION_FILE
+                if not pj.is_file():
+                    continue
+                try:
+                    data = json.loads(pj.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if str(data.get("event_id") or "") == event_id:
+                    return prod_dir
+    except OSError:
+        return None
+    return None
+
+
 def _mkdir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _has_files(folder: Path) -> bool:
+    """True if any regular file lives anywhere under *folder* (empty sub-folders don't count)."""
+    for _dirpath, _dirs, files in os.walk(folder):
+        if files:
+            return True
+    return False
+
+
+def _rebase(path_str: str, old_root: Path, new_root: Path) -> str:
+    try:
+        rel = Path(path_str).relative_to(old_root)
+    except ValueError:
+        return path_str
+    return str(new_root / rel)

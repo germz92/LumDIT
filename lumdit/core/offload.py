@@ -129,7 +129,8 @@ class FileOutcome:
 class OffloadProgress:
     phase: str = "scanning"  # scanning | copying | verifying | finalising | done | error | cancelled
     bytes_done: int = 0
-    bytes_total: int = 0
+    bytes_total: int = 0  # work units: copy pass + read-back pass (2x the data)
+    data_bytes: int = 0  # size of the media being processed, for display
     files_done: int = 0
     files_total: int = 0
     current_file: str = ""
@@ -370,6 +371,7 @@ class OffloadEngine:
             log.info("Scanned %d files, %.2f GB, %d junk skipped, fingerprint %s", len(scan.files), scan.total_bytes / 1e9, scan.skipped_junk, fingerprint)
             self.preflight(scan)
             self.progress.bytes_total = scan.total_bytes * 2  # copy pass + read-back pass
+            self.progress.data_bytes = scan.total_bytes
             self.progress.files_total = len(scan.files)
             req.destination.mkdir(parents=True, exist_ok=True)
 
