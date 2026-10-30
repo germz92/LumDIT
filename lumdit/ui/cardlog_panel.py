@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from lumdit.core.cardlog import CardLogEntry, CardLogEvent
+from lumdit.core.production import PRESET_CATEGORIES
 from lumdit.ui.util import muted_css, muted_hex
 
 COL_CAMERA, COL_CARD1, COL_CARD2, COL_USER, COL_CATEGORY, COL_STATUS = range(6)
@@ -288,7 +289,7 @@ class CardLogPanel(QWidget):
         self.choose_btn.setEnabled(True)
         self.skip_btn.setEnabled(True)
 
-    _production_categories: list[str] = ["Photo", "Video", "Headshot Booth"]
+    _production_categories: list[str] = list(PRESET_CATEGORIES)
 
     def set_production_categories(self, cats: list[str]) -> None:
         self._production_categories = list(cats)

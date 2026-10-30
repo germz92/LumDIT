@@ -433,6 +433,7 @@ class MainWindow(QMainWindow):
                         log_entry_id=req.log_entry_id,
                         log_slot=req.log_slot,
                         include_roots=list(req.include_roots),
+                        exclude_names=list(req.exclude_names),
                     )
                 )
             except OSError as exc:
@@ -545,6 +546,7 @@ class MainWindow(QMainWindow):
             log_entry_id=rec.log_entry_id,
             log_slot=rec.log_slot,
             include_roots=tuple(rec.include_roots),
+            exclude_names=tuple(rec.exclude_names),
         )
         self.resubmit_offload(req, True)
 

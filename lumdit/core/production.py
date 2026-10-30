@@ -30,7 +30,7 @@ from lumdit.core.naming import (
     sanitize_name,
 )
 
-PRESET_CATEGORIES: tuple[str, ...] = ("Photo", "Video", "Headshot Booth")
+PRESET_CATEGORIES: tuple[str, ...] = ("Photo", "Video", "Headshot Booth", "Audio", "Other")
 CATEGORY_SUBFOLDERS: tuple[str, ...] = ("Project Files", "Deliverables")
 PRODUCTION_FILE = "production.json"
 SCHEMA_VERSION = 1
@@ -62,6 +62,7 @@ class OffloadRecord:
     log_slot: int = 0
     # Card-relative roots that were copied (empty = whole source); lets a repair re-run the same job.
     include_roots: list[str] = field(default_factory=list)
+    exclude_names: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "OffloadRecord":
@@ -69,6 +70,7 @@ class OffloadRecord:
         kwargs.setdefault("log_entry_id", "")
         kwargs.setdefault("log_slot", 0)
         kwargs["include_roots"] = list(kwargs.get("include_roots") or [])
+        kwargs["exclude_names"] = list(kwargs.get("exclude_names") or [])
         return cls(**kwargs)  # type: ignore[arg-type]
 
 

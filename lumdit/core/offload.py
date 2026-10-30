@@ -88,6 +88,9 @@ class OffloadRequest:
     # Card-relative top-level folders to copy (e.g. ("DCIM",) or ("PRIVATE/M4ROOT",)).
     # Empty = copy the whole source. Structure under each root is preserved.
     include_roots: tuple[str, ...] = ()
+    # Top-level directory names to skip on a whole-source copy (e.g. MixPre TRASH/UNDO).
+    # Case-insensitive. Ignored when include_roots is set.
+    exclude_names: tuple[str, ...] = ()
     # Repair mode: when a destination file differs from the card, move it aside into
     # <destination>/_CONFLICTS/ and copy a fresh one. Nothing is ever deleted.
     repair_conflicts: bool = False
@@ -196,16 +199,24 @@ def is_destination_hidden(name: str) -> bool:
     return Path(name).suffix.lower() in HIDDEN_DEST_EXTS
 
 
-def scan_source(source: Path, volume_label: str = "", include_roots: tuple[str, ...] | list[str] = ()) -> ScanResult:
+def scan_source(
+    source: Path,
+    volume_label: str = "",
+    include_roots: tuple[str, ...] | list[str] = (),
+    exclude_names: tuple[str, ...] | list[str] = (),
+) -> ScanResult:
     """Walk *source* collecting media files (junk filtered) and a cheap fingerprint.
 
     When *include_roots* is given only those card-relative folders are walked; paths in
     the result stay relative to *source* so the card structure is preserved.
+    *exclude_names* skips matching top-level directories on a whole-source walk
+    (MixPre TRASH/UNDO, Tascam UTILITY). Case-insensitive.
     """
     files: list[FileEntry] = []
     skipped = 0
     total = 0
     source = Path(source)
+    skip_top = {n.lower() for n in exclude_names}
     if include_roots:
         # Resolve against the on-disk casing so relative paths match the card exactly.
         starts = [p for p in (_find_case_insensitive(source, r) for r in include_roots) if p is not None]
@@ -218,9 +229,16 @@ def scan_source(source: Path, volume_label: str = "", include_roots: tuple[str, 
             # Prune junk directories in place so we never descend into them.
             keep = [d for d in dirnames if not is_junk(d)]
             skipped += len(dirnames) - len(keep)
+            if skip_top and Path(dirpath) == source:
+                pruned = [d for d in keep if d.lower() in skip_top]
+                skipped += len(pruned)
+                keep = [d for d in keep if d.lower() not in skip_top]
             dirnames[:] = sorted(keep)
             for name in sorted(filenames):
                 if is_junk(name) or name.endswith(".part"):
+                    skipped += 1
+                    continue
+                if skip_top and Path(dirpath) == source and name.lower() in skip_top:
                     skipped += 1
                     continue
                 full = Path(dirpath) / name
@@ -378,7 +396,7 @@ class OffloadEngine:
                 "Offload start: %s | %s -> %s | roots=%s | label=%r",
                 req.title, req.source, req.destination, list(req.include_roots) or "all", req.source_label,
             )
-            scan = scan_source(req.source, req.source_label, req.include_roots)
+            scan = scan_source(req.source, req.source_label, req.include_roots, req.exclude_names)
             fingerprint = scan.fingerprint
             log.info("Scanned %d files, %.2f GB, %d junk skipped, fingerprint %s", len(scan.files), scan.total_bytes / 1e9, scan.skipped_junk, fingerprint)
             self.preflight(scan)
@@ -589,6 +607,7 @@ def write_report(result: OffloadResult, scan: ScanResult) -> Path:
         f"Source:        {req.source}",
         f"Source volume: {req.source_label}",
         f"Copied roots:  {', '.join(req.include_roots) if req.include_roots else 'entire source'}",
+        f"Excluded:      {', '.join(req.exclude_names) if req.exclude_names else '-'}",
         f"Repair mode:   {'yes - differing files moved to ' + CONFLICTS_DIR if req.repair_conflicts else 'no'}",
         f"Destination:   {req.destination}",
         f"Started:       {result.started.astimezone().isoformat(timespec='seconds')}",

@@ -40,6 +40,14 @@ _CATEGORY_MAP = {
     "headshots": CATEGORY_HEADSHOT,
     "headshot booth": CATEGORY_HEADSHOT,
     "booth": CATEGORY_HEADSHOT,
+    "audio": "Audio",
+    "sound": "Audio",
+    "sound recordist": "Audio",
+    "sound mixer": "Audio",
+    "boom": "Audio",
+    "other": "Other",
+    "misc": "Other",
+    "miscellaneous": "Other",
 }
 _INTERNAL_RE = re.compile(r"^\s*internal", re.IGNORECASE)
 _NUMERIC_RE = re.compile(r"^\s*#?\s*(\d{1,5})\s*$")

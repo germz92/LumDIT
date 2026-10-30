@@ -263,6 +263,7 @@ class EventBackupController(QObject):
             f"Destination: {self._destination_for(entry, slot, category).relative_to(self.production.root).as_posix()}",
         ]
         left_behind: list = []
+        exclude = layout.exclude_for(category) if layout is not None else ()
         if roots:
             info.append("Copying: " + "; ".join(r.summary() for r in roots))
             left_behind = layout.excluded_media(roots)
@@ -270,6 +271,10 @@ class EventBackupController(QObject):
                 info.append(
                     "Also on this card (NOT copied for " + category + "): " + "; ".join(r.summary() for r in left_behind)
                 )
+        elif layout is not None and layout.fingerprint:
+            info.append("Copying: " + layout.volume_summary())
+            if exclude:
+                info.append("Skipping: " + ", ".join(exclude))
         elif layout is not None and layout.recognised:
             info.append("No " + category.lower() + " media found in the usual folders - the whole card will be copied.")
         box.setInformativeText("\n".join(info))
@@ -282,15 +287,22 @@ class EventBackupController(QObject):
         box.exec()
         clicked = box.clickedButton()
         if clicked == offload:
-            self.offload_source(source, entry, slot, include_roots=tuple(r.rel for r in roots))
+            self.offload_source(
+                source, entry, slot, include_roots=tuple(r.rel for r in roots), exclude_names=exclude
+            )
         elif everything is not None and clicked == everything:
-            self.offload_source(source, entry, slot, include_roots=())
+            self.offload_source(source, entry, slot, include_roots=(), exclude_names=())
         elif clicked == other:
             picked = self._pick_entry()
             if picked:
                 self.set_target(picked[0].id, picked[1])
-                _, roots2 = self.plan_roots(source, self._category_for(picked[0]))
-                self.offload_source(source, *picked, include_roots=tuple(r.rel for r in roots2))
+                layout2, roots2 = self.plan_roots(source, self._category_for(picked[0]))
+                self.offload_source(
+                    source,
+                    *picked,
+                    include_roots=tuple(r.rel for r in roots2),
+                    exclude_names=layout2.exclude_for(self._category_for(picked[0])) if layout2 else (),
+                )
         elif clicked == manual:
             self.manual_offload_requested.emit(source, self.prefill_for(entry, slot))
 
@@ -352,14 +364,23 @@ class EventBackupController(QObject):
         }
 
     def offload_source(
-        self, source: Path, entry: CardLogEntry, slot: int, include_roots: tuple[str, ...] | None = None
+        self,
+        source: Path,
+        entry: CardLogEntry,
+        slot: int,
+        include_roots: tuple[str, ...] | None = None,
+        exclude_names: tuple[str, ...] | None = None,
     ) -> Job | None:
         if not self.active:
             return None
         if include_roots is None:
             # Called without a plan (e.g. "Choose folder..."): apply the same category rule.
-            _, roots = self.plan_roots(source, self._category_for(entry))
+            layout, roots = self.plan_roots(source, self._category_for(entry))
             include_roots = tuple(r.rel for r in roots)
+            if exclude_names is None:
+                exclude_names = layout.exclude_for(self._category_for(entry)) if layout else ()
+        if exclude_names is None:
+            exclude_names = ()
         category = self._category_for(entry)
         if category not in self.production.categories:
             self.production.add_category(category)
@@ -392,6 +413,7 @@ class EventBackupController(QObject):
             log_entry_id=entry.id,
             log_slot=slot,
             include_roots=tuple(include_roots),
+            exclude_names=tuple(exclude_names),
         )
         job = self.jobs.submit_offload(request)
         self._job_links[job.id] = (entry.id, slot)

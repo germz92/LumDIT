@@ -36,14 +36,24 @@ class _ScanSignals(QObject):
 
 
 class _ScanTask(QRunnable):
-    def __init__(self, source: Path, label: str, signals: _ScanSignals, include_roots: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        source: Path,
+        label: str,
+        signals: _ScanSignals,
+        include_roots: tuple[str, ...] = (),
+        exclude_names: tuple[str, ...] = (),
+    ) -> None:
         super().__init__()
         self.source, self.label, self.signals = source, label, signals
         self.include_roots = include_roots
+        self.exclude_names = exclude_names
 
     def run(self) -> None:
         try:
-            self.signals.done.emit(scan_source(self.source, self.label, self.include_roots))
+            self.signals.done.emit(
+                scan_source(self.source, self.label, self.include_roots, self.exclude_names)
+            )
         except Exception as exc:
             self.signals.error.emit(str(exc))
 
@@ -85,7 +95,7 @@ class OffloadDialog(QDialog):
         src_box.addWidget(self.src_info)
         # Card-root detection: offer to copy only the media folders for the chosen category.
         self.layout_info: CardLayout | None = detect_layout(self.source) if looks_like_card_root(self.source) else None
-        self.only_media = QCheckBox("Copy only the camera media folders for this category")
+        self.only_media = QCheckBox("Copy only the media folders for this category")
         self.only_media.setChecked(True)
         self.only_media.setVisible(self.layout_info is not None and self.layout_info.recognised)
         self.only_media.toggled.connect(self._update_roots_info)
@@ -124,7 +134,7 @@ class OffloadDialog(QDialog):
 
         defaults = production.defaults_for(self.category.currentText())
         self.camera = self._history_combo("camera", defaults["camera"])
-        self.camera.setToolTip("Camera body, e.g. FX3, A7IV, C70")
+        self._update_camera_tooltip()
         form.addRow("Camera name", self.camera)
 
         self.operator = self._history_combo("operator", defaults["operator"])
@@ -231,6 +241,7 @@ class OffloadDialog(QDialog):
             self.camera.setCurrentText(d["camera"])
         if d["operator"] and not self.operator.currentText().strip():
             self.operator.setCurrentText(d["operator"])
+        self._update_camera_tooltip()
         self._names_changed()
         self._update_roots_info()
 
@@ -240,18 +251,39 @@ class OffloadDialog(QDialog):
             return ()
         return tuple(r.rel for r in self.layout_info.roots_for(self.category.currentText()))
 
+    def exclude_names(self) -> tuple[str, ...]:
+        """Top-level names to skip on a whole-volume Audio copy."""
+        if self.layout_info is None or not self.only_media.isChecked():
+            return ()
+        return self.layout_info.exclude_for(self.category.currentText())
+
+    def _update_camera_tooltip(self) -> None:
+        if self.category.currentText().strip().lower() == "audio":
+            self.camera.setToolTip("Recorder, e.g. MixPre-6, Zoom F8, DJI Mic 2")
+        else:
+            self.camera.setToolTip("Camera body, e.g. FX3, A7IV, C70")
+
     def _update_roots_info(self, *_args) -> None:
         if self.layout_info is None or not self.layout_info.recognised:
             self._rescan()
             return
         roots = self.layout_info.roots_for(self.category.currentText())
+        exclude = self.exclude_names()
         if not self.only_media.isChecked():
-            self.roots_info.setText("Whole card will be copied: " + "; ".join(r.summary() for r in self.layout_info.roots if r.has_media))
+            summaries = [r.summary() for r in self.layout_info.roots if r.has_media]
+            if not summaries and self.layout_info.fingerprint:
+                summaries = [self.layout_info.volume_summary()]
+            self.roots_info.setText("Whole card will be copied: " + "; ".join(summaries))
         elif roots:
             text = "Copying: " + "; ".join(r.summary() for r in roots)
             left = self.layout_info.excluded_media(roots)
             if left:
                 text += "\nLeft on card: " + "; ".join(r.summary() for r in left)
+            self.roots_info.setText(text)
+        elif self.layout_info.fingerprint:
+            text = "Copying: " + self.layout_info.volume_summary()
+            if exclude:
+                text += "\nSkipping: " + ", ".join(exclude)
             self.roots_info.setText(text)
         else:
             self.roots_info.setText(
@@ -274,7 +306,15 @@ class OffloadDialog(QDialog):
         self._scan_signals = _ScanSignals()
         self._scan_signals.done.connect(self._scan_done)
         self._scan_signals.error.connect(self._scan_error)
-        QThreadPool.globalInstance().start(_ScanTask(self.source, self.volume_label, self._scan_signals, self.include_roots()))
+        QThreadPool.globalInstance().start(
+            _ScanTask(
+                self.source,
+                self.volume_label,
+                self._scan_signals,
+                self.include_roots(),
+                self.exclude_names(),
+            )
+        )
 
     def _names_changed(self, *_args) -> None:
         camera, operator = self.camera.currentText(), self.operator.currentText()
@@ -391,5 +431,6 @@ class OffloadDialog(QDialog):
             log_entry_id=self.log_entry_id,
             log_slot=self.log_slot,
             include_roots=self.include_roots(),
+            exclude_names=self.exclude_names(),
         )
         self.accept()

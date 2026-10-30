@@ -74,7 +74,12 @@ def test_normalise_category():
     assert normalise_category("Photo") == "Photo"
     assert normalise_category("video") == "Video"
     assert normalise_category("Headshot") == "Headshot Booth"
-    assert normalise_category("Other") is None
+    assert normalise_category("Sound") == "Audio"
+    assert normalise_category("audio") == "Audio"
+    assert normalise_category("sound recordist") == "Audio"
+    assert normalise_category("Other") == "Other"
+    assert normalise_category("misc") == "Other"
+    assert normalise_category("mic") is None
     assert normalise_category(None) is None
 
 
@@ -100,7 +105,7 @@ def test_parse_event_shape_and_ordering():
     assert ev.find_entry(str(E3)).category == "Headshot Booth"
     assert ev.find_entry(str(E5)).category is None
     assert ev.find_entry(str(E5)).card_value(1) == 7
-    assert ev.categories() == ["Video", "Headshot Booth", "Photo"]
+    assert ev.categories() == ["Video", "Headshot Booth", "Other", "Photo"]
 
 
 def test_pending_and_progress():
@@ -161,7 +166,7 @@ def test_find_or_create_for_event_maps_paths(tmp_path):
     assert prod.root == tmp_path / "Proofpoint" / "ProofPoint Protect"
     assert prod.event_id == ev.id
     # Only the categories the log actually uses, in log order - no empty preset folders.
-    assert prod.categories == ["Video", "Headshot Booth", "Photo"]
+    assert prod.categories == ["Video", "Headshot Booth", "Other", "Photo"]
     assert (prod.root / "Video" / "09.22.2026").is_dir()
 
     e3 = ev.find_entry(str(E3))
