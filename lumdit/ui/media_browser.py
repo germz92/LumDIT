@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from lumdit.core.offload import is_junk
+from lumdit.core.offload import is_destination_hidden, is_junk
 from lumdit.core.thumbnails import MEDIA_EXTS, SIDECAR_EXTS, media_kind
 from lumdit.ui.thumbnail_loader import ThumbnailLoader
 from lumdit.ui.util import human_size, open_with_system, reveal_in_file_manager
@@ -211,7 +211,7 @@ class MediaBrowser(QWidget):
                 with os.scandir(self.current) as it:
                     for de in it:
                         name = de.name
-                        if not self.show_hidden and (name.startswith(".") or is_junk(name)):
+                        if not self.show_hidden and is_destination_hidden(name):
                             continue
                         try:
                             is_dir = de.is_dir(follow_symlinks=False)

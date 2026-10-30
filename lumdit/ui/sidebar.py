@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QDir, QModelIndex, QTimer, Qt, Signal
+from PySide6.QtCore import QDir, QModelIndex, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileSystemModel,
@@ -17,7 +18,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSizePolicy,
-    QStyle,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -25,6 +25,45 @@ from PySide6.QtWidgets import (
 
 from lumdit.core import devices
 from lumdit.ui.util import human_size
+
+_STATUS_TIP = {
+    "pending": "Pending backup",
+    "done": "Backup completed",
+}
+
+
+def _backup_icon(status: str) -> QIcon:
+    """Clock for pending, check for completed. Cached per process."""
+    cached = _backup_icon._cache.get(status)  # type: ignore[attr-defined]
+    if cached is not None:
+        return cached
+    size = 18
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if status == "done":
+        painter.setBrush(QColor(46, 160, 67))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(1, 1, size - 2, size - 2)
+        painter.setPen(QPen(QColor("white"), 2.2))
+        painter.drawLine(5, 9, 8, 13)
+        painter.drawLine(8, 13, 14, 5)
+    else:
+        painter.setBrush(QColor(234, 179, 8))
+        painter.setPen(QPen(QColor(180, 130, 0), 1))
+        painter.drawEllipse(1, 1, size - 2, size - 2)
+        painter.setPen(QPen(QColor(60, 40, 0), 1.8))
+        cx = cy = size / 2
+        painter.drawLine(int(cx), int(cy), int(cx), 5)
+        painter.drawLine(int(cx), int(cy), 13, 10)
+    painter.end()
+    icon = QIcon(pm)
+    _backup_icon._cache[status] = icon  # type: ignore[attr-defined]
+    return icon
+
+
+_backup_icon._cache = {}  # type: ignore[attr-defined]
 
 
 class DeviceList(QListWidget):
@@ -43,7 +82,9 @@ class DeviceList(QListWidget):
         self.itemClicked.connect(self._clicked)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         self._volumes: list[devices.Volume] = []
+        self._backup_status: dict[str, str] = {}  # mountpoint -> "pending" (backing up) | "done"
         self._primed = False
+        self.setIconSize(QSize(18, 18))
         self._timer = QTimer(self)
         self._timer.setInterval(2000)
         self._timer.timeout.connect(self.refresh)
@@ -58,19 +99,20 @@ class DeviceList(QListWidget):
             # Update free-space text without rebuilding.
             for i, v in enumerate(vols):
                 if i < self.count():
-                    self.item(i).setText(self._label(v))
+                    self._decorate(self.item(i), v)
             self._volumes = vols
             self._primed = True
             return
         added = [v for mp, v in new.items() if mp not in old]
         removed = [v for mp, v in old.items() if mp not in new]
+        for v in removed:
+            self._backup_status.pop(v.mountpoint, None)
         self._volumes = vols
         self.clear()
-        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DriveFDIcon)
         for v in vols:
-            item = QListWidgetItem(icon, self._label(v))
-            item.setToolTip(f"{v.mountpoint}\n{v.fstype}\n{human_size(v.free)} free of {human_size(v.total)}")
+            item = QListWidgetItem(self._label(v))
             item.setData(Qt.ItemDataRole.UserRole, v.mountpoint)
+            self._decorate(item, v)
             self.addItem(item)
         if not vols:
             placeholder = QListWidgetItem("No cards detected")
@@ -88,6 +130,35 @@ class DeviceList(QListWidget):
     @staticmethod
     def _label(v: devices.Volume) -> str:
         return f"{v.display_name}  -  {human_size(v.total - v.free)} used"
+
+    def _status_for(self, v: devices.Volume) -> str | None:
+        return self._backup_status.get(v.mountpoint)
+
+    def _decorate(self, item: QListWidgetItem, v: devices.Volume) -> None:
+        status = self._status_for(v)
+        item.setText(self._label(v))
+        if status in _STATUS_TIP:
+            item.setIcon(_backup_icon(status))
+            tip = f"{_STATUS_TIP[status]}\n"
+        else:
+            item.setIcon(QIcon())
+            tip = ""
+        item.setToolTip(f"{tip}{v.mountpoint}\n{v.fstype}\n{human_size(v.free)} free of {human_size(v.total)}")
+
+    def set_backup_status(self, source: Path | str, status: str | None) -> None:
+        """Clock while an offload is running, check after it verifies, or no icon."""
+        path = Path(source)
+        vol = devices.volume_for_path(path)
+        key = vol.mountpoint if vol else str(path)
+        if status in _STATUS_TIP:
+            self._backup_status[key] = status
+        else:
+            self._backup_status.pop(key, None)
+        for i, v in enumerate(self._volumes):
+            if v.mountpoint == key or path == v.path or (vol and v.mountpoint == vol.mountpoint):
+                if i < self.count():
+                    self._decorate(self.item(i), v)
+                return
 
     def _volume_for_item(self, item: QListWidgetItem | None) -> devices.Volume | None:
         if item is None:

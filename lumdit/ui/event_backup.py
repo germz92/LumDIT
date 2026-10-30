@@ -49,6 +49,7 @@ class EventBackupController(QObject):
         self._job_links: dict[int, tuple[str, int]] = {}
         self._syncing: set[tuple[str, int]] = set()
         self._refreshing = False
+        self._completion_announced = False
 
         self._timer = QTimer(self)
         self._timer.setInterval(max(15, settings.cardlog_refresh_seconds) * 1000)
@@ -87,6 +88,7 @@ class EventBackupController(QObject):
         self.target = None
         self.skipped.clear()
         self.statuses = {}
+        self._completion_announced = False
         for w in production.pending_writebacks:
             self.statuses[(str(w.get("entry_id")), int(w.get("slot") or 1))] = "verified_unsynced"
         for job_id, link in self._job_links.items():
@@ -106,6 +108,7 @@ class EventBackupController(QObject):
         self.production = None
         self.target = None
         self.statuses = {}
+        self._completion_announced = False
         self.panel.set_event(None)
 
     def resume_for_production(self, production: Production) -> None:
@@ -463,8 +466,11 @@ class EventBackupController(QObject):
                 if not matched:
                     self.panel.set_note("Card log entry not found in the database - it may have been deleted in the crew app.")
             production.clear_writeback(entry_id, slot)
-            self.message.emit(f"Card log updated: card marked as backed up")
+            self.message.emit("Card log updated: card marked as backed up")
             self._update_pending_note()
+            if self.target is None or not self._is_promptable(*self.target):
+                self.advance("insert")
+            self._maybe_announce_complete()
 
         def failed(msg: str) -> None:
             self._syncing.discard((entry_id, slot))
@@ -492,3 +498,37 @@ class EventBackupController(QObject):
             )
         else:
             self.panel.set_note("")
+
+    def _maybe_announce_complete(self) -> None:
+        """Once every card 1 is verified and written back, tell the DIT the event is done."""
+        if not self.active or self._completion_announced:
+            return
+        ev, prod = self.log_event, self.production
+        done, total = ev.progress(1)
+        if not total or done < total:
+            return
+        if self._syncing or prod.pending_writebacks:
+            return
+        if any(s in (*ACTIVE_STATES, "paused", "verified_unsynced") for s in self.statuses.values()):
+            return
+        if any(j.active for jid, j in ((i, self.jobs.jobs.get(i)) for i in self._job_links) if j):
+            return
+        self._completion_announced = True
+        try:
+            dest = str(prod.root.resolve())
+        except OSError:
+            dest = str(prod.root)
+        skipped = len(self.skipped)
+        extra = ""
+        if skipped:
+            extra = f"\n\n{skipped} card(s) were skipped and are not marked backed up."
+        log.info("Event backup complete: %r | %d/%d card 1s | %s", ev.title, done, total, dest)
+        self.message.emit(f"Event backup complete: {ev.title} ({done}/{total} cards)")
+        QMessageBox.information(
+            self._parent,
+            "Event backup complete",
+            f"{ev.title} is fully backed up.\n\n"
+            f"{done} of {total} card 1s verified and marked in LumDash.\n"
+            f"Saved to:\n{dest}"
+            + extra,
+        )

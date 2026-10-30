@@ -65,6 +65,7 @@ class MainWindow(QMainWindow):
         self.resize(1400, 900)
 
         self.jobs = JobManager(self.settings.max_concurrent_jobs, self)
+        self.jobs.job_added.connect(self._job_added)
         self.jobs.job_finished.connect(self._job_finished)
         self.loader = ThumbnailLoader(cache_dir(), parent=self)
         self._verify_batches: dict[int, list[int]] = {}  # batch id -> job ids
@@ -79,7 +80,7 @@ class MainWindow(QMainWindow):
 
         self.sidebar = Sidebar()
         self.browser = MediaBrowser(self.loader, self.settings.thumbnail_size, self.settings.show_hidden_files)
-        self.production_view = ProductionView()
+        self.production_view = ProductionView(loader=self.loader, settings=self.settings)
         self.cardlog_panel = CardLogPanel()
         self.drop_zone = DropZone()
         self.event_backup = EventBackupController(self.settings, self.jobs, self.cardlog_panel, self)
@@ -398,9 +399,15 @@ class MainWindow(QMainWindow):
             job = self.jobs.submit_offload(dlg.request)
             self.statusBar().showMessage(f"Offload started: {job.title} -> {dlg.request.destination.name}", 6000)
 
+    def _job_added(self, job: Job) -> None:
+        if job.kind == "offload" and isinstance(job.payload, OffloadRequest):
+            self.sidebar.devices.set_backup_status(job.payload.source, "pending")
+
     def _job_finished(self, job: Job) -> None:
         if job.kind == "offload" and isinstance(job.result, OffloadResult):
             self._offload_finished(job, job.result)
+        elif job.kind == "offload" and isinstance(job.payload, OffloadRequest):
+            self.sidebar.devices.set_backup_status(job.payload.source, None)
         elif job.kind == "verify":
             self._verify_job_finished(job)
 
@@ -434,6 +441,7 @@ class MainWindow(QMainWindow):
         self.production_view.refresh()
         self.production_view.reveal(req.destination)
         if result.status == "verified":
+            self.sidebar.devices.set_backup_status(req.source, "done")
             self.statusBar().showMessage(f"Verified: {job.title} ({result.copied} files)", 10000)
             if self.settings.eject_after_offload:
                 vol = devices.volume_for_path(req.source)
@@ -442,6 +450,7 @@ class MainWindow(QMainWindow):
                 ):
                     QTimer.singleShot(1000, lambda v=vol: self.sidebar.devices.eject(v))
         else:
+            self.sidebar.devices.set_backup_status(req.source, None)
             self.statusBar().showMessage(f"{job.title}: {result.message}", 10000)
             if result.status in ("issues", "error"):
                 self._show_offload_result(result)

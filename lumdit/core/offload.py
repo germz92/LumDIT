@@ -60,6 +60,8 @@ JUNK_NAMES = {
 JUNK_PREFIXES = ("._",)
 REPORT_NAME = "OFFLOAD_REPORT.txt"
 CONFLICTS_DIR = "_CONFLICTS"
+HIDDEN_DEST_EXTS = {".mhl", ".xxh64", ".part"}
+HIDDEN_DEST_NAMES = {REPORT_NAME.lower(), "production.json"}
 log = logging.getLogger(__name__)
 
 
@@ -182,6 +184,16 @@ ProgressCallback = Callable[[OffloadProgress], None]
 
 def is_junk(name: str) -> bool:
     return name in JUNK_NAMES or name.startswith(JUNK_PREFIXES)
+
+
+def is_destination_hidden(name: str) -> bool:
+    """Sidecars and reports hidden in the destination view unless the user asks to see them."""
+    if not name or is_junk(name) or name.startswith("."):
+        return True
+    lower = name.lower()
+    if lower in HIDDEN_DEST_NAMES:
+        return True
+    return Path(name).suffix.lower() in HIDDEN_DEST_EXTS
 
 
 def scan_source(source: Path, volume_label: str = "", include_roots: tuple[str, ...] | list[str] = ()) -> ScanResult:

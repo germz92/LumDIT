@@ -92,6 +92,22 @@ class Settings:
         self.set("browser/show_hidden", bool(v))
 
     @property
+    def dest_show_hidden(self) -> bool:
+        return bool(self.value("destination/show_hidden", False, bool))
+
+    @dest_show_hidden.setter
+    def dest_show_hidden(self, v: bool) -> None:
+        self.set("destination/show_hidden", bool(v))
+
+    @property
+    def dest_icon_view(self) -> bool:
+        return bool(self.value("destination/icon_view", True, bool))
+
+    @dest_icon_view.setter
+    def dest_icon_view(self, v: bool) -> None:
+        self.set("destination/icon_view", bool(v))
+
+    @property
     def eject_after_offload(self) -> bool:
         return bool(self.value("jobs/eject_after_offload", False, bool))
 
