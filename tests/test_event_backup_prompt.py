@@ -1,8 +1,10 @@
 """Event-backup insert prompt: one card must not offload as two log entries."""
 
+import sys
 from datetime import date
 from pathlib import Path
 
+import pytest
 from PySide6.QtWidgets import QApplication, QWidget
 
 from lumdit.core.devices import Volume, normalize_mountpoint, parse_diskutil_info
@@ -36,6 +38,7 @@ def _controller(tmp_path: Path) -> tuple[EventBackupController, object, object]:
     return ctrl, pending, ev
 
 
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Drive-letter forms are Windows-only")
 def test_normalize_drive_letter_forms():
     assert normalize_mountpoint("E:\\") == normalize_mountpoint("E:") == normalize_mountpoint("e:/")
 
