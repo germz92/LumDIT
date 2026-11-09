@@ -93,8 +93,8 @@ class DeviceList(QListWidget):
 
     def refresh(self) -> None:
         vols = devices.removable_volumes()
-        old = {v.mountpoint: v for v in self._volumes}
-        new = {v.mountpoint: v for v in vols}
+        old = {devices.normalize_mountpoint(v.mountpoint): v for v in self._volumes}
+        new = {devices.normalize_mountpoint(v.mountpoint): v for v in vols}
         if list(old) == list(new):
             # Update free-space text without rebuilding.
             for i, v in enumerate(vols):
@@ -107,6 +107,7 @@ class DeviceList(QListWidget):
         removed = [v for mp, v in old.items() if mp not in new]
         for v in removed:
             self._backup_status.pop(v.mountpoint, None)
+            self._backup_status.pop(devices.normalize_mountpoint(v.mountpoint), None)
         self._volumes = vols
         self.clear()
         for v in vols:
@@ -132,7 +133,7 @@ class DeviceList(QListWidget):
         return f"{v.display_name}  -  {human_size(v.total - v.free)} used"
 
     def _status_for(self, v: devices.Volume) -> str | None:
-        return self._backup_status.get(v.mountpoint)
+        return self._backup_status.get(devices.normalize_mountpoint(v.mountpoint)) or self._backup_status.get(v.mountpoint)
 
     def _decorate(self, item: QListWidgetItem, v: devices.Volume) -> None:
         status = self._status_for(v)
@@ -149,7 +150,7 @@ class DeviceList(QListWidget):
         """Clock while an offload is running, check after it verifies, or no icon."""
         path = Path(source)
         vol = devices.volume_for_path(path)
-        key = vol.mountpoint if vol else str(path)
+        key = devices.normalize_mountpoint(vol.mountpoint) if vol else str(path)
         if status in _STATUS_TIP:
             self._backup_status[key] = status
         else:

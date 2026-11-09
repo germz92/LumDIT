@@ -88,6 +88,7 @@ class MainWindow(QMainWindow):
         self.sidebar.folder_selected.connect(self.browser.set_folder)
         self.sidebar.offload_requested.connect(lambda p: self.start_offload([p]))
         self.sidebar.devices.volume_added.connect(self.event_backup.on_volume_added)
+        self.sidebar.devices.volume_removed.connect(self.event_backup.on_volume_removed)
         self.browser.folder_activated.connect(self._browser_navigate)
         self.browser.offload_requested.connect(lambda p: self.start_offload([p]))
         self.production_view.folder_activated.connect(self._browser_navigate)

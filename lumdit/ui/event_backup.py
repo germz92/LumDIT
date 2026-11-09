@@ -27,6 +27,10 @@ from lumdit.ui.cardlog_panel import CardLogPanel
 from lumdit.ui.dialogs.event_picker import EventChoice
 
 ACTIVE_STATES = ("queued", "running")
+# macOS remounts a card from /Volumes/Untitled to /Volumes/<label> a moment after
+# insert; Windows can do the same with a drive-letter flicker. Keep the claim
+# until the volume has stayed gone this long so a rename is not a second insert.
+_REMOUNT_GRACE_MS = 4000
 log = logging.getLogger(__name__)
 
 
@@ -50,6 +54,10 @@ class EventBackupController(QObject):
         self._syncing: set[tuple[str, int]] = set()
         self._refreshing = False
         self._completion_announced = False
+        self._prompting = False
+        self._claimed_keys: set[str] = set()
+        self._release_timers: dict[str, QTimer] = {}
+        self._release_meta: dict[str, tuple[int, str]] = {}  # key -> (total, identity) while grace runs
 
         self._timer = QTimer(self)
         self._timer.setInterval(max(15, settings.cardlog_refresh_seconds) * 1000)
@@ -89,6 +97,8 @@ class EventBackupController(QObject):
         self.skipped.clear()
         self.statuses = {}
         self._completion_announced = False
+        self._prompting = False
+        self._clear_claims()
         for w in production.pending_writebacks:
             self.statuses[(str(w.get("entry_id")), int(w.get("slot") or 1))] = "verified_unsynced"
         for job_id, link in self._job_links.items():
@@ -109,6 +119,8 @@ class EventBackupController(QObject):
         self.target = None
         self.statuses = {}
         self._completion_announced = False
+        self._prompting = False
+        self._clear_claims()
         self.panel.set_event(None)
 
     def resume_for_production(self, production: Production) -> None:
@@ -233,11 +245,30 @@ class EventBackupController(QObject):
     def on_volume_added(self, volume: devices.Volume) -> None:
         if not self.active:
             return
-        log.info("Card detected: %s at %s", volume.display_name, volume.path)
+        keys = self._volume_keys(volume)
+        for k in keys:
+            self._cancel_release(k)
+        if self._prompting or (keys & self._claimed_keys) or self._is_remount(volume):
+            self._claimed_keys |= keys
+            log.info("Ignoring duplicate/remount of %s at %s", volume.display_name, volume.path)
+            return
         tgt = self._target_entry()
         if not tgt:
             return
-        self._prompt_for_source(volume.path, f"Card detected: {volume.display_name}", tgt)
+        log.info("Card detected: %s at %s", volume.display_name, volume.path)
+        self._prompt_for_source(
+            volume.path, f"Card detected: {volume.display_name}", tgt, extra_keys=keys
+        )
+
+    def on_volume_removed(self, volume: devices.Volume) -> None:
+        """Release the insert-claim after a short grace so remounts are ignored."""
+        keys = self._volume_keys(volume)
+        if self._prompting:
+            return
+        if not (keys & self._claimed_keys):
+            return
+        for k in keys:
+            self._schedule_release(k, volume.total, volume.identity)
 
     def handle_dropped_folders(self, folders: list[Path]) -> bool:
         """Return True if the drop was consumed by the walk-through."""
@@ -250,7 +281,96 @@ class EventBackupController(QObject):
             self._prompt_for_source(Path(folder), f"Folder dropped: {folder}", tgt)
         return True
 
-    def _prompt_for_source(self, source: Path, headline: str, tgt: tuple[CardLogEntry, int]) -> None:
+    @staticmethod
+    def _source_key(path: Path | str) -> str:
+        return devices.device_key(path)
+
+    def _volume_keys(self, volume: devices.Volume) -> set[str]:
+        keys = {self._source_key(volume.path), devices.normalize_mountpoint(volume.mountpoint)}
+        if volume.identity:
+            keys.add("id:" + volume.identity)
+        return keys
+
+    def _is_remount(self, volume: devices.Volume) -> bool:
+        """True when this looks like the same card coming back under a new /Volumes name."""
+        keys = self._volume_keys(volume)
+        if keys & self._claimed_keys:
+            return True
+        for total, ident in self._release_meta.values():
+            if ident and volume.identity and ident == volume.identity:
+                return True
+            if volume.total and total == volume.total:
+                if ident and volume.identity and ident != volume.identity:
+                    continue
+                return True
+        return False
+
+    def _clear_claims(self) -> None:
+        for t in self._release_timers.values():
+            t.stop()
+            t.deleteLater()
+        self._release_timers.clear()
+        self._release_meta.clear()
+        self._claimed_keys.clear()
+
+    def _cancel_release(self, key: str) -> None:
+        t = self._release_timers.pop(key, None)
+        self._release_meta.pop(key, None)
+        if t is None:
+            return
+        t.stop()
+        t.deleteLater()
+
+    def _schedule_release(self, key: str, total: int = 0, identity: str = "") -> None:
+        self._cancel_release(key)
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        timer.setInterval(_REMOUNT_GRACE_MS)
+        timer.timeout.connect(lambda k=key: self._release_claim(k))
+        self._release_timers[key] = timer
+        self._release_meta[key] = (total, identity)
+        timer.start()
+
+    def _release_claim(self, key: str) -> None:
+        self._release_timers.pop(key, None)
+        self._release_meta.pop(key, None)
+        self._claimed_keys.discard(key)
+        log.info("Reader slot released (%s); a new card can prompt", key)
+
+    def _source_has_active_job(self, source: Path) -> bool:
+        key = self._source_key(source)
+        return any(j.active and j.kind == "offload" and j.device_key == key for j in self.jobs.jobs.values())
+
+    def _prompt_for_source(
+        self,
+        source: Path,
+        headline: str,
+        tgt: tuple[CardLogEntry, int],
+        extra_keys: set[str] | None = None,
+    ) -> None:
+        if self._prompting:
+            return
+        source = Path(source)
+        keys = {self._source_key(source)}
+        if extra_keys:
+            keys |= extra_keys
+        if keys & self._claimed_keys:
+            log.info("Already handled this volume, not prompting again: %s", source)
+            return
+        entry, slot = tgt
+        if self.statuses.get((entry.id, slot)) in (*ACTIVE_STATES, "paused"):
+            log.info("Entry %s slot %d is already offloading, not prompting", entry.id, slot)
+            return
+        self._prompting = True
+        self._claimed_keys |= keys
+        for k in keys:
+            self._cancel_release(k)
+        try:
+            self._run_source_prompt(source, headline, tgt)
+        finally:
+            self._prompting = False
+
+    def _run_source_prompt(self, source: Path, headline: str, tgt: tuple[CardLogEntry, int]) -> None:
         entry, slot = tgt
         category = self._category_for(entry)
         layout, roots = self.plan_roots(source, category)
@@ -373,6 +493,12 @@ class EventBackupController(QObject):
     ) -> Job | None:
         if not self.active:
             return None
+        if self.statuses.get((entry.id, slot)) in (*ACTIVE_STATES, "paused"):
+            log.info("Already offloading entry %s slot %d, ignoring extra Offload", entry.id, slot)
+            return None
+        if self._source_has_active_job(Path(source)):
+            log.info("Source %s already has an active offload, not assigning it to another card", source)
+            return None
         if include_roots is None:
             # Called without a plan (e.g. "Choose folder..."): apply the same category rule.
             layout, roots = self.plan_roots(source, self._category_for(entry))
@@ -416,6 +542,8 @@ class EventBackupController(QObject):
             exclude_names=tuple(exclude_names),
         )
         job = self.jobs.submit_offload(request)
+        self._claimed_keys.add(self._source_key(source))
+        self._cancel_release(self._source_key(source))
         self._job_links[job.id] = (entry.id, slot)
         log.info("Card log offload submitted: job %s for entry %s slot %d (%s)", job.id, entry.id, slot, entry.describe(slot))
         self.statuses[(entry.id, slot)] = job.state if job.state in ACTIVE_STATES else "queued"

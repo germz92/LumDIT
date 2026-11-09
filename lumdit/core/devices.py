@@ -23,6 +23,9 @@ class Volume:
     total: int
     free: int
     removable: bool
+    # Stable across remounts: Mac ``disk4s1`` / Volume UUID, Windows volume serial.
+    # Empty when the OS has not published one yet (first-mount race).
+    identity: str = ""
 
     @property
     def display_name(self) -> str:
@@ -36,16 +39,25 @@ class Volume:
         return Path(self.mountpoint)
 
 
-def _windows_label(mountpoint: str) -> str:
+def _windows_volume_info(mountpoint: str) -> tuple[str, str]:
+    """Return (label, identity) from the volume serial. Identity survives remounts."""
     if not IS_WINDOWS:
-        return ""
+        return "", ""
     buf = ctypes.create_unicode_buffer(261)
     fs = ctypes.create_unicode_buffer(261)
+    serial = ctypes.c_uint(0)
     root = mountpoint if mountpoint.endswith("\\") else mountpoint + "\\"
     ok = ctypes.windll.kernel32.GetVolumeInformationW(  # type: ignore[attr-defined]
-        ctypes.c_wchar_p(root), buf, ctypes.sizeof(buf), None, None, None, fs, ctypes.sizeof(fs)
+        ctypes.c_wchar_p(root), buf, ctypes.sizeof(buf), ctypes.byref(serial), None, None, fs, ctypes.sizeof(fs)
     )
-    return buf.value if ok else ""
+    if not ok:
+        return "", ""
+    ident = f"win:{serial.value:08x}" if serial.value else ""
+    return buf.value, ident
+
+
+def _windows_label(mountpoint: str) -> str:
+    return _windows_volume_info(mountpoint)[0]
 
 
 def _windows_is_removable(mountpoint: str) -> bool:
@@ -56,25 +68,70 @@ def _windows_is_removable(mountpoint: str) -> bool:
     return drive_type == 2  # DRIVE_REMOVABLE
 
 
-def _mac_is_removable(mountpoint: str) -> bool:
+def parse_diskutil_info(text: str) -> tuple[bool, str]:
+    """Parse ``diskutil info`` text into (removable, identity).
+
+    Identity is the Device Identifier (``disk4s1``) or Volume UUID so a remount
+    from ``/Volumes/Untitled`` to ``/Volumes/EOS_DIGITAL`` stays the same card.
+    """
+    ident = uuid = ""
+    removable_line = ""
+    ejectable = False
+    for raw in text.splitlines():
+        if ":" not in raw:
+            continue
+        key, _, val = raw.partition(":")
+        key = key.strip().lower()
+        val = val.strip()
+        if key == "device identifier":
+            ident = val
+        elif key == "volume uuid":
+            uuid = val
+        elif key == "removable media":
+            removable_line = val.lower()
+        elif key == "ejectable":
+            ejectable = val.lower().startswith("yes")
+    # "Removable" but not "Non-Removable" / "No".
+    removable = removable_line.startswith("yes") or removable_line == "removable"
+    if not removable_line:
+        removable = ejectable or "removable" in text.lower()
+    return removable or ejectable, ident or uuid
+
+
+def _mac_disk_info(mountpoint: str) -> tuple[bool, str]:
+    """Return (removable, identity) for a /Volumes mount."""
     if not mountpoint.startswith("/Volumes/"):
-        return False
+        return False, ""
     try:
         out = subprocess.run(
             ["diskutil", "info", mountpoint], capture_output=True, text=True, timeout=5
         ).stdout
     except Exception:
-        return True
-    lower = out.lower()
-    if "removable media:" in lower:
-        return "removable" in lower.split("removable media:")[1].split("\n")[0]
-    return "ejectable: yes" in lower or "removable" in lower
+        return True, ""
+    return parse_diskutil_info(out)
+
+
+def _mac_is_removable(mountpoint: str) -> bool:
+    return _mac_disk_info(mountpoint)[0]
+
+
+def normalize_mountpoint(mountpoint: str) -> str:
+    """Stable volume identity: ``E:`` and ``E:\\`` are the same reader slot."""
+    raw = str(mountpoint).strip()
+    if IS_WINDOWS:
+        drive = raw.replace("/", "\\").rstrip("\\")
+        if len(drive) == 2 and drive[1] == ":":
+            return os.path.normcase(drive + "\\")
+        mp = os.path.normcase(os.path.abspath(raw))
+        return mp.rstrip("\\/") + "\\"
+    mp = os.path.normcase(os.path.abspath(raw))
+    return mp.rstrip("/") or "/"
 
 
 def list_volumes(include_fixed: bool = True) -> list[Volume]:
     volumes: list[Volume] = []
     for part in psutil.disk_partitions(all=False):
-        mp = part.mountpoint
+        mp = normalize_mountpoint(part.mountpoint)
         if IS_MAC and mp != "/" and not mp.startswith("/Volumes/"):
             continue
         if "cdrom" in part.opts or part.fstype == "":
@@ -83,11 +140,12 @@ def list_volumes(include_fixed: bool = True) -> list[Volume]:
             usage = psutil.disk_usage(mp)
         except (PermissionError, OSError):
             continue
+        identity = ""
         if IS_WINDOWS:
             removable = _windows_is_removable(mp) or "removable" in part.opts
-            label = _windows_label(mp)
+            label, identity = _windows_volume_info(mp)
         elif IS_MAC:
-            removable = _mac_is_removable(mp)
+            removable, identity = _mac_disk_info(mp)
             label = Path(mp).name if mp != "/" else "Macintosh HD"
         else:
             removable = "/media/" in mp or "/run/media/" in mp
@@ -102,6 +160,7 @@ def list_volumes(include_fixed: bool = True) -> list[Volume]:
                 total=usage.total,
                 free=usage.free,
                 removable=removable,
+                identity=identity,
             )
         )
     return volumes
@@ -116,7 +175,7 @@ def volume_for_path(path: Path | str) -> Volume | None:
     p = os.path.normcase(os.path.abspath(str(path)))
     best: Volume | None = None
     for v in list_volumes():
-        mp = os.path.normcase(os.path.abspath(v.mountpoint))
+        mp = normalize_mountpoint(v.mountpoint)
         mp_cmp = mp.rstrip("\\/") + os.sep
         if p == mp.rstrip("\\/") or p.startswith(mp_cmp) or (mp == os.sep and p.startswith(os.sep)):
             if best is None or len(mp) > len(best.mountpoint):
@@ -127,7 +186,11 @@ def volume_for_path(path: Path | str) -> Volume | None:
 def device_key(path: Path | str) -> str:
     """Stable key identifying the physical volume a path lives on (for job serialisation)."""
     v = volume_for_path(path)
-    return os.path.normcase(v.mountpoint) if v else os.path.normcase(os.path.abspath(str(path)))
+    if v is None:
+        return normalize_mountpoint(str(path))
+    if v.identity:
+        return "id:" + v.identity
+    return normalize_mountpoint(v.mountpoint)
 
 
 def free_space(path: Path | str) -> int:
