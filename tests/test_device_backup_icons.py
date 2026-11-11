@@ -19,7 +19,7 @@ def test_backup_icons_are_distinct() -> None:
 def test_device_list_clock_then_check(monkeypatch) -> None:
     QApplication.instance() or QApplication([])
     vol = Volume(mountpoint="E:\\CARD", label="SONY", fstype="exfat", total=10**9, free=5 * 10**8, removable=True)
-    monkeypatch.setattr("lumdit.core.devices.removable_volumes", lambda: [vol])
+    monkeypatch.setattr("lumdit.core.devices.removable_volumes", lambda wait=True: [vol])
     monkeypatch.setattr("lumdit.core.devices.volume_for_path", lambda p: vol)
     lst = DeviceList()
     lst._timer.stop()

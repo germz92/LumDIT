@@ -87,12 +87,23 @@ class DeviceList(QListWidget):
         self.setIconSize(QSize(18, 18))
         self._timer = QTimer(self)
         self._timer.setInterval(2000)
-        self._timer.timeout.connect(self.refresh)
+        self._timer.timeout.connect(self._poll)
         self._timer.start()
+        # Picks up a newly mounted card as soon as its background lookup finishes.
+        self._recheck = QTimer(self)
+        self._recheck.setSingleShot(True)
+        self._recheck.setInterval(250)
+        self._recheck.timeout.connect(self._poll)
         self.refresh()
 
-    def refresh(self) -> None:
-        vols = devices.removable_volumes()
+    def _poll(self) -> None:
+        self.refresh(wait=False)
+        if devices.lookups_pending():
+            self._recheck.start()
+
+    def refresh(self, wait: bool = True) -> None:
+        """Rebuild from mounted volumes. ``wait=False`` keeps disk lookups off the UI thread."""
+        vols = devices.removable_volumes(wait=wait)
         old = {devices.normalize_mountpoint(v.mountpoint): v for v in self._volumes}
         new = {devices.normalize_mountpoint(v.mountpoint): v for v in vols}
         if list(old) == list(new):
